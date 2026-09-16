@@ -119,7 +119,7 @@ class Orchestrator:
         by_id = {c.candidate_id: c for c in opt_result.feasible_candidates}
 
         for candidate in opt_result.feasible_candidates:
-            guard_report = self.guard.review(candidate, decision_at)
+            guard_report = self.guard.review(candidate, decision_at, state)
             if guard_report.final_verdict != GuardVerdict.BLOCK:
                 alternatives = [
                     by_id[cid] for cid in pareto_ids

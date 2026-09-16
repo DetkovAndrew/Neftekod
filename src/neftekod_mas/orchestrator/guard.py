@@ -23,18 +23,36 @@ consolidated plan received via MQTT". Здесь роль "MQTT" играет т
                              всегда PASS
   5. downstream_impact     -- информационная проверка через TagGraph BFS,
                              прикладывается к объяснению, не блокирует
+  6. joint_envelope        -- (опционально, если передан JointEnvelopeChecker)
+                             совместное состояние всех активных управляющих
+                             переменных после применения кандидата сверяется
+                             с историческим облаком точек (nearest-neighbor),
+                             не только маржинальный диапазон самой изменяемой
+                             переменной (ARCHITECTURE.md §5.3, по методике
+                             Ta & Liu 2027 §3.3.3). Даёт WARN, не BLOCK --
+                             эвристика на даунсемплированном облаке, не
+                             жёсткая гарантия.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from neftekod_mas.schemas import ControlCandidate, GuardCheck, GuardReport, GuardVerdict
+from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker
+from neftekod_mas.schemas import ControlCandidate, GuardCheck, GuardReport, GuardVerdict, ProcessState
 from neftekod_mas.tags.pid_graph import TagGraph
+
+JOINT_ENVELOPE_WARN_DISTANCE = 0.5  # нормализованные единицы -- явное допущение, не откалибровано
 
 
 class Guard:
-    def __init__(self, tag_graph: TagGraph, control_variables_cfg: dict, control_bounds: dict):
+    def __init__(
+        self,
+        tag_graph: TagGraph,
+        control_variables_cfg: dict,
+        control_bounds: dict,
+        joint_envelope: JointEnvelopeChecker | None = None,
+    ):
         self.tag_graph = tag_graph
         self.known_variables = {
             var["name"]: var
@@ -42,8 +60,11 @@ class Guard:
             for var in block.get("variables", [])
         }
         self.bounds = {k: v for k, v in control_bounds.items() if k != "_meta"}
+        self.joint_envelope = joint_envelope
 
-    def review(self, candidate: ControlCandidate | None, decision_at: datetime) -> GuardReport:
+    def review(
+        self, candidate: ControlCandidate | None, decision_at: datetime, state: ProcessState | None = None
+    ) -> GuardReport:
         checks: list[GuardCheck] = []
 
         if candidate is None:
@@ -91,6 +112,28 @@ class Guard:
                 ))
 
         checks.append(GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.PASS, detail="Переменные блендинга не активны в v1"))
+
+        if self.joint_envelope is not None and state is not None:
+            current_values = {tag: r.value for tag, r in state.kip.items()}
+            for action in candidate.actions:
+                if action.tag:
+                    current_values[action.tag] = action.recommended_value
+            dist = self.joint_envelope.nearest_distance(current_values)
+            if dist is None:
+                pass  # не все координаты доступны -- проверка не применима, не блокирует
+            elif dist > JOINT_ENVELOPE_WARN_DISTANCE:
+                checks.append(GuardCheck(
+                    check_name="joint_envelope", verdict=GuardVerdict.WARN,
+                    detail=f"Совместное состояние активных переменных на расстоянии {dist:.2f} "
+                    f"(норм. ед.) от ближайшей исторической точки > порога {JOINT_ENVELOPE_WARN_DISTANCE} -- "
+                    "такая КОМБИНАЦИЯ значений в истории не встречалась, хотя каждая переменная "
+                    "по отдельности в допустимых пределах (ARCHITECTURE.md §5.3)",
+                ))
+            else:
+                checks.append(GuardCheck(
+                    check_name="joint_envelope", verdict=GuardVerdict.PASS,
+                    detail=f"Расстояние до ближайшей исторической точки: {dist:.2f}",
+                ))
 
         if any(c.verdict == GuardVerdict.BLOCK for c in checks):
             final = GuardVerdict.BLOCK

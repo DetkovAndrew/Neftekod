@@ -9,6 +9,7 @@ data/
 raw/
 /neftekod/
 runs/
+config/joint_envelope.npz
 
 # Python
 __pycache__/

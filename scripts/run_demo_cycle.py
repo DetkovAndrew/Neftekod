@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from neftekod_mas.data.loaders import data_dir, load_kip, load_lims, load_pak  # noqa: E402
 from neftekod_mas.optimization.optimization_agent import OptimizationAgent  # noqa: E402
+from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker  # noqa: E402
 from neftekod_mas.orchestrator.guard import Guard  # noqa: E402
 from neftekod_mas.orchestrator.orchestrator import Orchestrator  # noqa: E402
 from neftekod_mas.quality.quality_agent import QualityAgent  # noqa: E402
@@ -55,7 +56,11 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     quality_agent = QualityAgent(hc, formula_accuracy=formula_accuracy)
     reliability_agent = ReliabilityAgent(rb)
     optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
-    guard = Guard(graph, cv, cb)
+    joint_envelope_path = CONFIG_DIR / "joint_envelope.npz"
+    joint_envelope = (
+        JointEnvelopeChecker.from_npz(joint_envelope_path, cb) if joint_envelope_path.exists() else None
+    )
+    guard = Guard(graph, cv, cb, joint_envelope=joint_envelope)
     try:
         kip_bounds = load_kip_bounds()
     except FileNotFoundError:

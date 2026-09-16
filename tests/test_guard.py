@@ -1,5 +1,9 @@
 from datetime import datetime
 
+import numpy as np
+
+from neftekod_mas.data.sync import DataQualityReport
+from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker
 from neftekod_mas.orchestrator.guard import Guard
 from neftekod_mas.schemas import (
     ConfidenceLevel,
@@ -7,7 +11,10 @@ from neftekod_mas.schemas import (
     ControlCandidate,
     EquipmentRiskAssessment,
     GuardVerdict,
+    ProcessState,
     RiskClass,
+    TagReading,
+    DataSource,
 )
 from neftekod_mas.tags.pid_graph import TagGraph, TagNode
 
@@ -73,3 +80,23 @@ def test_block_when_no_candidate():
     guard = Guard(_graph(), CONTROL_VARIABLES, CONTROL_BOUNDS)
     report = guard.review(None, datetime(2023, 1, 1, 10, 0))
     assert report.final_verdict == GuardVerdict.BLOCK
+
+
+def test_joint_envelope_warns_far_from_history_but_does_not_block():
+    now = datetime(2023, 1, 1, 10, 0)
+    points = np.array([[0.95]], dtype="float32")  # история сосредоточена у верхней границы
+    je = JointEnvelopeChecker(points=points, tags=["avt:T55"], bounds=CONTROL_BOUNDS)
+    guard = Guard(_graph(), CONTROL_VARIABLES, CONTROL_BOUNDS, joint_envelope=je)
+
+    state = ProcessState(
+        decision_at=now,
+        kip={"avt:T55": TagReading(tag_id="avt:T55", value=380.0, unit="°C", timestamp=now, source=DataSource.KIP)},
+        lab_points={},
+        quality_report=DataQualityReport(decision_at=now, flags=[], sync_ok=True),
+    )
+    candidate = _candidate("avt_furnace_outlet_temp_c", "avt:T55", 375.0)  # далеко от истории (p05)
+
+    report = guard.review(candidate, now, state)
+    joint_check = next(c for c in report.checks if c.check_name == "joint_envelope")
+    assert joint_check.verdict == GuardVerdict.WARN
+    assert report.final_verdict == GuardVerdict.WARN  # WARN, не BLOCK -- см. docstring Guard
