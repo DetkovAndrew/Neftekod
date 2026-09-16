@@ -22,6 +22,7 @@ from neftekod_mas.schemas import (
     Recommendation,
     RiskClass,
 )
+from neftekod_mas.utils.logging_run import NullRunLogger
 
 ACTION_NEEDED_QUALITY_RISK = {RiskClass.MEDIUM, RiskClass.HIGH, RiskClass.CRITICAL}
 ACTION_NEEDED_EQUIPMENT_RISK = {RiskClass.MEDIUM, RiskClass.HIGH, RiskClass.CRITICAL}
@@ -35,12 +36,14 @@ class Orchestrator:
         optimization_agent: OptimizationAgent,
         guard: Guard,
         kip_bounds: dict | None = None,
+        run_logger=None,
     ):
         self.quality_agent = quality_agent
         self.reliability_agent = reliability_agent
         self.optimization_agent = optimization_agent
         self.guard = guard
         self.kip_bounds = kip_bounds
+        self.run_logger = run_logger or NullRunLogger()
 
     def run_cycle(
         self,
@@ -54,6 +57,7 @@ class Orchestrator:
         state = build_process_state(
             decision_at, avt_kip, ht_kip, lims_long, pak_long, kip_bounds=self.kip_bounds
         )
+        self.run_logger.log(decision_at, "01_process_state", state)
 
         if not state.quality_report.sync_ok:
             return self._refusal(
@@ -63,6 +67,7 @@ class Orchestrator:
 
         # Шаг 3: качество
         quality = self.quality_agent.assess(state)
+        self.run_logger.log(decision_at, "02_quality_assessment", quality)
         if quality.overall_confidence == ConfidenceLevel.REFUSE:
             return self._refusal(
                 decision_at, state.quality_report.flags,
@@ -72,6 +77,7 @@ class Orchestrator:
 
         # Шаг 4: надёжность
         risk = self.reliability_agent.assess(state)
+        self.run_logger.log(decision_at, "03_reliability_assessment", risk)
 
         quality_needs_action = any(v.risk_class in ACTION_NEEDED_QUALITY_RISK for v in quality.violations)
         equipment_needs_action = risk.risk_class in ACTION_NEEDED_EQUIPMENT_RISK
@@ -81,7 +87,7 @@ class Orchestrator:
         } | {"severity_index": risk.severity_index}
 
         if not quality_needs_action and not equipment_needs_action:
-            return Recommendation(
+            rec = Recommendation(
                 decision_at=decision_at,
                 key_state=key_state,
                 problem_or_risk="Риска не обнаружено.",
@@ -93,11 +99,14 @@ class Orchestrator:
                 explanation=explain_no_action(quality, risk),
                 is_refusal=False,
             )
+            self.run_logger.log(decision_at, "05_recommendation", rec)
+            return rec
 
         # Шаги 5-7: генерация, отбор, ранжирование вариантов
         baseline_margins = {v.metric: v.margin for v in quality.violations}
         violated_metrics = {v.metric for v in quality.violations if v.risk_class in ACTION_NEEDED_QUALITY_RISK}
         opt_result = self.optimization_agent.run(state, baseline_margins, risk, quality, violated_metrics)
+        self.run_logger.log(decision_at, "04_optimization_result", opt_result)
 
         if opt_result.no_feasible_solution:
             return self._refusal(decision_at, state.quality_report.flags, opt_result.no_feasible_reason or "нет допустимого варианта.", key_state=key_state)
@@ -116,7 +125,7 @@ class Orchestrator:
                     by_id[cid] for cid in pareto_ids
                     if cid != candidate.candidate_id and cid in by_id
                 ]
-                return Recommendation(
+                rec = Recommendation(
                     decision_at=decision_at,
                     key_state=key_state,
                     problem_or_risk=self._problem_text(quality, risk),
@@ -129,6 +138,8 @@ class Orchestrator:
                     is_refusal=False,
                     alternatives=alternatives,
                 )
+                self.run_logger.log(decision_at, "05_recommendation", rec)
+                return rec
 
         return self._refusal(
             decision_at, state.quality_report.flags,
@@ -150,7 +161,7 @@ class Orchestrator:
         return [f"{f.code}: {f.tag_or_point} -- {f.detail}" for f in state.quality_report.flags]
 
     def _refusal(self, decision_at, flags, reason: str, key_state: dict | None = None) -> Recommendation:
-        return Recommendation(
+        rec = Recommendation(
             decision_at=decision_at,
             key_state=key_state or {},
             problem_or_risk=reason,
@@ -162,3 +173,5 @@ class Orchestrator:
             explanation=explain_refusal(reason),
             is_refusal=True,
         )
+        self.run_logger.log(decision_at, "05_recommendation", rec)
+        return rec

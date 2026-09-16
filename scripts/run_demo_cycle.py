@@ -30,6 +30,7 @@ from neftekod_mas.orchestrator.orchestrator import Orchestrator  # noqa: E402
 from neftekod_mas.quality.quality_agent import QualityAgent  # noqa: E402
 from neftekod_mas.reliability.reliability_agent import ReliabilityAgent  # noqa: E402
 from neftekod_mas.tags.pid_graph import TagGraph  # noqa: E402
+from neftekod_mas.utils.logging_run import RunLogger  # noqa: E402
 from neftekod_mas.utils.config import (  # noqa: E402
     CONFIG_DIR,
     load_control_bounds,
@@ -41,7 +42,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
 )
 
 
-def build_orchestrator() -> Orchestrator:
+def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     hc = load_hard_constraints()
     cv = load_control_variables()
     cb = load_control_bounds()
@@ -57,7 +58,11 @@ def build_orchestrator() -> Orchestrator:
         kip_bounds = load_kip_bounds()
     except FileNotFoundError:
         kip_bounds = None
-    return Orchestrator(quality_agent, reliability_agent, optimization_agent, guard, kip_bounds=kip_bounds)
+    run_logger = RunLogger(REPO_ROOT / "runs") if enable_run_logging else None
+    return Orchestrator(
+        quality_agent, reliability_agent, optimization_agent, guard,
+        kip_bounds=kip_bounds, run_logger=run_logger,
+    )
 
 
 def print_recommendation_card(rec) -> None:

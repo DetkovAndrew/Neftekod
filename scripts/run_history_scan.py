@@ -36,7 +36,10 @@ from neftekod_mas.data.loaders import data_dir, load_kip, load_lims, load_pak  #
 
 
 def scan(start: datetime, end: datetime, step: timedelta) -> list[dict]:
-    orchestrator = build_orchestrator()
+    # per-cycle артефакты (runs/<timestamp>/*.json) отключены при массовом
+    # прогоне -- иначе сотни точек сканирования оставили бы тысячи файлов
+    # на диске; для точечного разбора конкретного момента см. run_demo_cycle.py
+    orchestrator = build_orchestrator(enable_run_logging=False)
     avt = load_kip(data_dir() / "avt_tags.csv")
     ht = load_kip(data_dir() / "242000_tags.csv")
     lims = load_lims(data_dir() / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx")
