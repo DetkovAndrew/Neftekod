@@ -46,6 +46,20 @@ SULFUR_TEMP_PROXY_TAGS = {"242000:T5", "242000:T11"}
 
 DELTA_STEPS = [-2, -1, 1, 2]  # шагов сетки в обе стороны от текущей точки
 
+_FLOW_UNITS = {"т/ч", "м³/ч", "м3/ч"}
+
+
+def _flow_throughput_proxy(action: ControlAction) -> float | None:
+    """Прокси 'влияние на выпуск' (ТЗ п.4: 'производительность/выпуск' --
+    одна из 4 вещей, которые система должна оптимизировать). Осмыслен
+    только для переменных типа расход (F30/F32/F15) -- для температуры
+    и давления изменение выпуска не считается напрямую в имеющихся
+    материалах, поэтому честно возвращается None, а не 0 (0 означало бы
+    "проверили, эффекта нет", а не "нечем измерить")."""
+    if action.unit not in _FLOW_UNITS:
+        return None
+    return action.recommended_value - action.current_value
+
 
 _INSTALLATION_KEY_TO_GRAPH_PREFIX = {"avt": "avt", "hydrotreating_242000": "242000"}
 
@@ -192,7 +206,7 @@ class OptimizationAgent:
             actions=[action],
             predicted_quality=predicted_quality,
             predicted_risk=predicted_risk,
-            throughput_proxy=None,
+            throughput_proxy=_flow_throughput_proxy(action),
             energy_cost_proxy=abs(action.recommended_value - action.current_value),
             feasible=feasible,
             rejection_reason=rejection_reason,
@@ -228,11 +242,24 @@ class OptimizationAgent:
         predictable_metrics = {e.metric for e in candidate.predicted_quality}
         unaddressed_penalty = 1.0 * len(violated_metrics - predictable_metrics)
 
+        # energy_cost_proxy и throughput_proxy -- в СЫРЫХ единицах самой
+        # переменной (°C, МПа, т/ч вперемешку). Нормируем на масштаб
+        # диапазона (p95-p05) этой же переменной, иначе сдвиг давления на
+        # 0.02 МПа и сдвиг температуры на 4°C складывались бы по весу так,
+        # будто они сопоставимы -- та же ошибка, что уже была исправлена
+        # для margin_improve чуть выше.
+        tag = candidate.actions[0].tag
+        b = self.bounds.get(tag or "")
+        scale = max((b["p95"] - b["p05"]), 1e-6) if b else 1.0
+        energy_norm = (candidate.energy_cost_proxy or 0.0) / scale
+        throughput_norm = (candidate.throughput_proxy or 0.0) / scale
+
         w = self.weights
         score = (
             w["quality_margin_improvement"] * margin_improve
             - w["equipment_risk_severity"] * candidate.predicted_risk.severity_index
-            - w["energy_cost_proxy"] * (candidate.energy_cost_proxy or 0.0)
+            - w["energy_cost_proxy"] * energy_norm
+            + w["throughput_proxy"] * throughput_norm
             - unaddressed_penalty
         )
         return score

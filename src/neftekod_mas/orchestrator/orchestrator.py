@@ -130,7 +130,11 @@ class Orchestrator:
                     key_state=key_state,
                     problem_or_risk=self._problem_text(quality, risk),
                     proposed_actions=candidate.actions,
-                    expected_effect={e.metric: e.value for e in candidate.predicted_quality},
+                    expected_effect={
+                        **{e.metric: e.value for e in candidate.predicted_quality},
+                        "equipment_risk_severity": candidate.predicted_risk.severity_index,
+                        "energy_cost_proxy": candidate.energy_cost_proxy or 0.0,
+                    },
                     constraints_checked=guard_report.checks,
                     confidence=quality.overall_confidence,
                     confidence_warnings=self._warnings(state) + candidate.caveats,
