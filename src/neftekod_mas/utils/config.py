@@ -45,6 +45,14 @@ def load_vak_formula_accuracy() -> dict:
         return yaml.safe_load(f) or {}
 
 
+def load_astm_accuracy() -> dict:
+    path = CONFIG_DIR / "astm_cetane_accuracy.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
 def load_kip_bounds() -> dict:
     path = CONFIG_DIR / "kip_bounds.json"
     if not path.exists():

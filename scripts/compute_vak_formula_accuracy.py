@@ -91,11 +91,16 @@ def backtest_metric(ht: pd.DataFrame, lims_point: pd.DataFrame, formula_key, nee
     if not errors:
         return {"n": 0}
     s = pd.Series(errors)
+    rmse = float((s ** 2).mean() ** 0.5)
+    bias = float(s.mean())
     return {
         "n": int(len(s)),
         "mae": round(float(s.abs().mean()), 4),
-        "rmse": round(float((s ** 2).mean() ** 0.5), 4),
-        "bias": round(float(s.mean()), 4),
+        "rmse": round(rmse, 4),
+        "bias": round(bias, 4),
+        # см. compute_astm_cetane_accuracy.py -- та же идея: остаточный
+        # разброс после вычитания измеренного смещения.
+        "std_after_bias_correction": round(max(rmse ** 2 - bias ** 2, 0.0) ** 0.5, 4),
     }
 
 

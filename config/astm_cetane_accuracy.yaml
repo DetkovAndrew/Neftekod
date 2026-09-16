@@ -1,0 +1,11 @@
+_meta:
+  methodology: D15/T50 matched to CetaneNumber measurement within 0 days 06:00:00;
+    same-time matching is valid here (unlike VAK formula backtest) since D976 does
+    not use cetane itself as an input.
+  source: ASTM D976-91, archive.org/stream/gov.law.astm.d976.1991
+cetane_number_d976:
+  n: 38
+  mae: 1.702
+  rmse: 2.126
+  bias: -1.069
+  std_after_bias_correction: 1.837

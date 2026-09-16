@@ -41,6 +41,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
     load_objective_weights,
     load_reliability_bounds,
     load_vak_formula_accuracy,
+    load_astm_accuracy,
 )
 
 
@@ -52,8 +53,9 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     ow = load_objective_weights()
     graph = TagGraph.from_json(CONFIG_DIR / "tag_ontology.json")
     formula_accuracy = load_vak_formula_accuracy()
+    astm_accuracy = load_astm_accuracy()
 
-    quality_agent = QualityAgent(hc, formula_accuracy=formula_accuracy)
+    quality_agent = QualityAgent(hc, formula_accuracy=formula_accuracy, astm_accuracy=astm_accuracy)
     reliability_agent = ReliabilityAgent(rb)
     optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
     joint_envelope_path = CONFIG_DIR / "joint_envelope.npz"

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from neftekod_mas.quality import astm_correlations as astm
 from neftekod_mas.quality import vak_formulas as vak
 from neftekod_mas.schemas import (
     ConfidenceLevel,
@@ -33,6 +34,10 @@ from neftekod_mas.schemas import (
 )
 
 GODT_POINT2 = "Установка 'Гидроочистка'.. Точка отбора '2'. Продукт 'Дизельное топливо'"
+# Точка 1 -- вход в гидроочистку (ФРАКЦ_ДИЗ), содержит Mass.Sulfur
+# (% масс.) -- сера СЫРЬЯ, нужна для расчёта severity ГДС
+# (literature_proxies.hds_severity), см. ARCHITECTURE.md §6.4.
+HT_FEED_POINT = "Установка 'Гидроочистка'. Точка отбора '1'. Продукт 'ФРАКЦ_ДИЗ'."
 
 # Критический порог возраста ЛИМС, после которого показатель считается
 # ненадёжным настолько, что System обязана понизить confidence до REFUSE,
@@ -50,12 +55,14 @@ class MetricSpec:
     vak_needs_lims: bool  # формула сама использует LIMS.* как вход
 
 
-# Явный реестр -- какой из 4 показателей чем поддержан. Обратите внимание:
-# для серы и цетанового числа ВАК-формулы НЕТ вовсе (в переданном наборе
-# формул её не оказалось) -- честно отражено как vak_formula=None, а не
-# скрыто "заглушкой". Для серы есть независимый ПАК; для цетанового
-# числа нет НИ ПАК, НИ формулы -- это самый хрупкий с точки зрения
-# доступности показатель в системе, и это важно показывать оператору.
+# Явный реестр -- какой из 4 показателей чем поддержан. Для серы есть
+# независимый ПАК; для цетанового числа нет НИ ПАК, НИ производственной
+# ВАК-формулы (vak_formula=None, честно, не заглушка) -- но есть
+# опубликованный отраслевой стандарт ASTM D976 (astm_correlations.py),
+# подключённый отдельным механизмом ниже (_estimate_cetane_via_d976),
+# т.к. ему нужны сразу ДВА других показателя (D15 и T50), а не один
+# тег КИП, как у остальных формул -- не укладывается в единообразный
+# паттерн MetricSpec.vak_formula.
 METRIC_SPECS: list[MetricSpec] = [
     MetricSpec("sulfur_mg_kg", "мг/кг", "Mg.Sulfur", "24-2000:Mg.Sulfur", None, False),
     MetricSpec("t95_c", "°C", "95%.T", None, "24-2000:GODT:T95", True),
@@ -63,6 +70,12 @@ METRIC_SPECS: list[MetricSpec] = [
     MetricSpec("cfpp_c", "°C", "CFPP", None, "24-2000:GODT:CFPP", False),
     MetricSpec("density_kg_m3", "кг/м3", "D15", "24-2000:D15", "24-2000:GODT:D15", True),
 ]
+
+# Внутренний, не публикуемый в QualityAssessment.current спецификатор --
+# T50 не является нормируемым показателем сам по себе, нужен только как
+# вход формулы D976 (см. ниже).
+_T50_SPEC = MetricSpec("t50_c", "°C", "50%.T", None, "24-2000:GODT:T50", False)
+_DENSITY_SPEC = next(s for s in METRIC_SPECS if s.metric == "density_kg_m3")
 
 
 def _ht_tag_dict(state: ProcessState) -> dict[str, float]:
@@ -88,6 +101,7 @@ class QualityAgent:
         hard_constraints: dict,
         stale_lims_minutes: float = 24 * 60,
         formula_accuracy: dict | None = None,
+        astm_accuracy: dict | None = None,
     ):
         self.hard_constraints = hard_constraints
         self.stale_lims_minutes = stale_lims_minutes
@@ -96,6 +110,9 @@ class QualityAgent:
         # него формульные оценки просто не получают typical_error/доп.
         # понижения confidence, остальной пайплайн не ломается.
         self.formula_accuracy = {k: v for k, v in (formula_accuracy or {}).items() if k != "_meta"}
+        # Бэктест ASTM D976 против реальных CetaneNumber этого завода
+        # (scripts/compute_astm_cetane_accuracy.py) -- также опционально.
+        self.astm_accuracy = {k: v for k, v in (astm_accuracy or {}).items() if k != "_meta"}
 
     def assess(self, state: ProcessState) -> QualityAssessment:
         estimates: list[QualityMetricEstimate] = []
@@ -161,8 +178,66 @@ class QualityAgent:
                     confidence=ConfidenceLevel.HIGH if pak.age_minutes <= 60 else ConfidenceLevel.MEDIUM,
                 )
 
-        # 3) ВАК-формула -- расчётный слой, самый низкий приоритет
+        # 3a) Цетановое число -- особый случай: нет ни ПАК, ни
+        # производственной ВАК-формулы, но есть опубликованный
+        # отраслевой стандарт ASTM D976 (нужны сразу D15 И T50).
+        if spec.metric == "cetane_number":
+            return self._estimate_cetane_via_d976(state, for_prediction=False)
+
+        # 3b) ВАК-формула -- расчётный слой, самый низкий приоритет
         return self._estimate_via_formula(spec, state)
+
+    def _estimate_cetane_via_d976(self, state: ProcessState, for_prediction: bool) -> QualityMetricEstimate | None:
+        """ASTM D976 (astm_correlations.py) -- опубликованный, не
+        заводской источник. Нужны ОДНОВРЕМЕННО D15 и T50: для текущей
+        оценки берутся по обычному приоритету ЛИМС->ПАК->формула
+        (`_estimate_metric`), для прогноза эффекта кандидата -- ТОЛЬКО
+        через формулу (`_estimate_via_formula`), по тем же причинам,
+        что и в `predict_effect` (ЛИМС/ПАК не реагируют на гипотетическое
+        решение)."""
+        if for_prediction:
+            d15 = self._estimate_via_formula(_DENSITY_SPEC, state)
+            t50 = self._estimate_via_formula(_T50_SPEC, state)
+        else:
+            d15 = self._estimate_metric(_DENSITY_SPEC, state)
+            t50 = self._estimate_metric(_T50_SPEC, state)
+
+        if d15 is None or t50 is None or t50.value <= 0 or d15.value <= 0:
+            return None
+
+        value = astm.cetane_index_d976(d15.value / 1000.0, t50.value)
+
+        acc = self.astm_accuracy.get("cetane_number_d976")
+        typical_error = None
+        if acc and acc.get("n", 0) > 0:
+            # Коррекция измеренного систематического смещения (bias) --
+            # НЕ переобучение формулы, просто вычитание уже посчитанной
+            # константы (scripts/compute_astm_cetane_accuracy.py). Без
+            # неё цепочка GODT:D15 -> GODT:T50 -> D976 систематически
+            # занижала цетановое число (~1 ед.), из-за чего почти все
+            # кандидаты ложно отбраковывались как нарушающие предел 51 --
+            # найдено на реальном прогоне, см. ARCHITECTURE.md §5.2.
+            value -= acc["bias"]
+            typical_error = acc.get("std_after_bias_correction", acc["mae"])
+
+        # MEDIUM, а не HIGH: валидированный стандарт (см. astm_correlations.py,
+        # бэктест на данных этого завода дал MAE~1.7 при пороге риска 2.0),
+        # но не прямое измерение и не заводская формула -- ЛИМС всё равно
+        # приоритетнее, если доступен свежий (см. п.1 выше).
+        confidence = ConfidenceLevel.MEDIUM
+        margin_medium = self.hard_constraints.get("product_diesel", {}).get("cetane_number", {}).get("risk_margin_medium")
+        if typical_error is not None and margin_medium is not None and typical_error >= margin_medium:
+            confidence = ConfidenceLevel.LOW
+
+        return QualityMetricEstimate(
+            metric="cetane_number",
+            value=value,
+            unit="ед.цет.ч.",
+            source=DataSource.PUBLISHED_CORRELATION,
+            age_minutes=None,
+            confidence=confidence,
+            typical_error=typical_error,
+        )
 
     def _estimate_via_formula(self, spec: MetricSpec, state: ProcessState) -> QualityMetricEstimate | None:
         if spec.vak_formula is None:
@@ -190,13 +265,14 @@ class QualityAgent:
         typical_error = None
         acc = self.formula_accuracy.get(spec.metric)
         if acc and acc.get("n", 0) > 0:
-            typical_error = acc["mae"]
-            # Если типичная ошибка формулы по бэктесту (MAE) уже сопоставима
-            # с "медианным" порогом риска этого показателя -- доверие к
-            # формуле принудительно понижается до LOW, независимо от
-            # умолчания выше. Найдено на реальном бэктесте: CFPP-формула
-            # имеет MAE=11.4°C при risk_margin_medium=8°C и системным
-            # смещением (bias≈-MAE) -- см. ARCHITECTURE.md §5.3.
+            # Коррекция измеренного систематического смещения -- см.
+            # тот же приём и то же обоснование в _estimate_cetane_via_d976.
+            # Особенно важно для CFPP: bias≈-MAE (формула была ПОЧТИ
+            # ЦЕЛИКОМ систематической ошибкой, не шумом) -- после
+            # коррекции typical_error падает с 11.4°C до остаточного
+            # разброса std_after_bias_correction, см. ARCHITECTURE.md §5.3.
+            value -= acc["bias"]
+            typical_error = acc.get("std_after_bias_correction", acc["mae"])
             margin_medium = self.hard_constraints.get("product_diesel", {}).get(spec.metric, {}).get("risk_margin_medium")
             if margin_medium is not None and typical_error >= margin_medium:
                 confidence = ConfidenceLevel.LOW
@@ -218,15 +294,22 @@ class QualityAgent:
         ЛИМС/ПАК описывают уже случившийся факт и не могут "среагировать"
         на предполагаемое, ещё не принятое решение -- использовать их
         текущее значение как прогноз эффекта было бы неявной и неверной
-        подменой факта прогнозом. Метрики без формулы (сера, цетановое
-        число -- см. §5.2.1 ARCHITECTURE.md) здесь принципиально
-        отсутствуют: система не делает вид, что умеет прогнозировать то,
-        для чего в материалах нет расчётной модели."""
+        подменой факта прогнозом. Метрики без формулы/корреляции (сера --
+        см. §5.2.1 ARCHITECTURE.md) здесь принципиально отсутствуют:
+        система не делает вид, что умеет прогнозировать то, для чего в
+        материалах нет расчётной модели. Цетановое число -- ИСКЛЮЧЕНИЕ
+        с 2026-09: ASTM D976 (astm_correlations.py) даёт прогноз через
+        предсказываемые D15/T50, см. _estimate_cetane_via_d976."""
         results = []
         for spec in METRIC_SPECS:
             est = self._estimate_via_formula(spec, hypothetical_state)
             if est is not None:
                 results.append(est)
+
+        cetane_est = self._estimate_cetane_via_d976(hypothetical_state, for_prediction=True)
+        if cetane_est is not None:
+            results.append(cetane_est)
+
         return results
 
     def _check_violations(self, estimates: list[QualityMetricEstimate]) -> list[SpecViolationRisk]:

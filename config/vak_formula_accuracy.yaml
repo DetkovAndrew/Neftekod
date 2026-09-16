@@ -7,15 +7,18 @@ t95_c:
   mae: 6.116
   rmse: 7.8048
   bias: -0.3512
+  std_after_bias_correction: 7.7969
 cfpp_c:
   formula: 24-2000:GODT:CFPP
   n: 414
   mae: 11.4065
   rmse: 11.6485
   bias: -11.4065
+  std_after_bias_correction: 2.3622
 density_kg_m3:
   formula: 24-2000:GODT:D15
   n: 1011
   mae: 1.6789
   rmse: 2.4286
   bias: 0.2718
+  std_after_bias_correction: 2.4133

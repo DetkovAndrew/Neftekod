@@ -23,7 +23,7 @@ from datetime import datetime
 
 from neftekod_mas.reliability.reliability_agent import ReliabilityAgent
 from neftekod_mas.quality import literature_proxies as litproxy
-from neftekod_mas.quality.quality_agent import QualityAgent
+from neftekod_mas.quality.quality_agent import HT_FEED_POINT, QualityAgent
 from neftekod_mas.schemas import (
     ConfidenceLevel,
     ControlAction,
@@ -146,19 +146,42 @@ class OptimizationAgent:
         # Литературный прокси серы -- см. quality/literature_proxies.py.
         # Включается ТОЛЬКО для температуры реактора 24-2000 и ТОЛЬКО
         # если сера сейчас реально под угрозой (иначе не нужен).
+        # Предпочитается физически обоснованная Аррениус-модель (нужна
+        # свежая сера СЫРЬЯ из ЛИМС, точка 1); при её отсутствии --
+        # резервная плоская оценка (7.5%/°C, Q&A вопрос №32).
         if action.tag in SULFUR_TEMP_PROXY_TAGS and "sulfur_mg_kg" in violated_metrics:
             baseline_sulfur = next((e for e in quality_baseline.current if e.metric == "sulfur_mg_kg"), None)
             if baseline_sulfur is not None:
                 delta_t = action.recommended_value - action.current_value
-                proxy_value = litproxy.sulfur_after_reactor_temp_change(baseline_sulfur.value, delta_t)
+                feed_reading = state.lab_points.get(f"{HT_FEED_POINT}|Mass.Sulfur")
+                model_note = None
+                proxy_value = None
+                if feed_reading is not None:
+                    try:
+                        severity = litproxy.hds_severity(feed_reading.value, baseline_sulfur.value)
+                        proxy_value = litproxy.sulfur_after_reactor_temp_change_arrhenius(
+                            baseline_sulfur.value, severity, action.current_value, delta_t,
+                        )
+                        model_note = (
+                            f"физически обоснованная модель Аррениуса кинетики ГДС "
+                            f"(Ea=55 кДж/моль по открытой литературе, severity={severity:.2f} "
+                            f"по факт. сере сырья {feed_reading.value:.3g}% масс., "
+                            f"возраст ЛИМС {feed_reading.age_minutes:.0f} мин)"
+                        )
+                    except ValueError:
+                        pass
+                if proxy_value is None:
+                    proxy_value = litproxy.sulfur_after_reactor_temp_change_flat(baseline_sulfur.value, delta_t)
+                    model_note = "резервная плоская оценка 7.5%/°C (нет свежего ЛИМС по сере сырья, точка 1)"
+
                 predicted_quality = [*predicted_quality, QualityMetricEstimate(
                     metric="sulfur_mg_kg", value=proxy_value, unit="мг/кг",
                     source=DataSource.LITERATURE_PROXY, age_minutes=None, confidence=ConfidenceLevel.LOW,
                 )]
                 caveats.append(
-                    "Оценка серы -- ЛИТЕРАТУРНЫЙ прокси (7.5%/°C, середина диапазона 5-10%, "
-                    "Q&A вопрос №32), НЕ подтверждён экспертом и НЕ является производственной "
-                    "ВАК-формулой. Требует проверки технологом перед применением."
+                    f"Оценка серы -- ЛИТЕРАТУРНЫЙ прокси ({model_note}), НЕ подтверждён экспертом "
+                    "завода и НЕ является производственной ВАК-формулой. Требует проверки "
+                    "технологом перед применением."
                 )
 
         predicted_risk = self.reliability_agent.assess(modified_state)

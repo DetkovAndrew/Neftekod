@@ -29,6 +29,7 @@ class DataSource(str, Enum):
     ML_MODEL = "ml_model"
     KIP = "kip"
     LITERATURE_PROXY = "literature_proxy"  # см. quality/literature_proxies.py -- не производственная формула
+    PUBLISHED_CORRELATION = "published_correlation"  # см. quality/astm_correlations.py -- валидированный отраслевой стандарт (ASTM)
 
 
 class ConfidenceLevel(str, Enum):
