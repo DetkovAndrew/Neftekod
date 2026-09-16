@@ -93,12 +93,14 @@ class OptimizationAgent:
         if b is None:
             return []
         step = max((b["p95"] - b["p05"]) / 8.0, 1e-6)
-        values = []
+        values: list[float] = []
         for k in DELTA_STEPS:
-            v = current + k * step
-            v = min(max(v, b["p05"]), b["p95"])
-            if abs(v - current) > 1e-9:
-                values.append(round(v, 4))
+            v = round(min(max(current + k * step, b["p05"]), b["p95"]), 4)
+            # клиппинг к границе может свести разные шаги к одному и тому же
+            # значению -- дедуплицируем, иначе в альтернативах появляются
+            # визуально одинаковые кандидаты с разными candidate_id.
+            if abs(v - current) > 1e-9 and v not in values:
+                values.append(v)
         return values
 
     def _apply_action(self, state: ProcessState, tag: str, new_value: float) -> ProcessState:

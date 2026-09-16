@@ -228,6 +228,7 @@ class Recommendation(BaseModel):
     explanation: str
     llm_commentary: Optional[str] = None  # см. §9 ARCHITECTURE.md: никогда не влияет на проверки
     is_refusal: bool = False
+    alternatives: list[ControlCandidate] = Field(default_factory=list)  # Парето-фронт минус выбранный (ТЗ п.3: "альтернативы")
 
 
 # ---------------------------------------------------------------------------

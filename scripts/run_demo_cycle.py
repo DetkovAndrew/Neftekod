@@ -89,6 +89,12 @@ def print_recommendation_card(rec) -> None:
         print(f"    ! {w}")
     print("-" * 78)
     print(f"Объяснение: {rec.explanation}")
+    if rec.alternatives:
+        print("-" * 78)
+        print(f"Альтернативы (Парето-фронт, {len(rec.alternatives)}):")
+        for alt in rec.alternatives:
+            a = alt.actions[0]
+            print(f"    [{alt.candidate_id}] {a.variable_name}: {a.current_value:.4g} -> {a.recommended_value:.4g} {a.unit} (score={alt.score:.3g})")
     print("=" * 78)
 
 

@@ -104,9 +104,18 @@ class Orchestrator:
 
         # Шаг 8: выбрать и объяснить -- с независимой Guard-проверкой,
         # при BLOCK пробуем следующего по рангу кандидата (defense in depth).
+        # Альтернативы (ТЗ п.3, роль Оркестратора: "...альтернативы...") --
+        # остальные точки Парето-фронта, кроме выбранной.
+        pareto_ids = set(opt_result.pareto_front_ids)
+        by_id = {c.candidate_id: c for c in opt_result.feasible_candidates}
+
         for candidate in opt_result.feasible_candidates:
             guard_report = self.guard.review(candidate, decision_at)
             if guard_report.final_verdict != GuardVerdict.BLOCK:
+                alternatives = [
+                    by_id[cid] for cid in pareto_ids
+                    if cid != candidate.candidate_id and cid in by_id
+                ]
                 return Recommendation(
                     decision_at=decision_at,
                     key_state=key_state,
@@ -118,6 +127,7 @@ class Orchestrator:
                     confidence_warnings=self._warnings(state) + candidate.caveats,
                     explanation=explain_recommendation(candidate, quality, risk),
                     is_refusal=False,
+                    alternatives=alternatives,
                 )
 
         return self._refusal(
