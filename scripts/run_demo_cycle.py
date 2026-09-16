@@ -35,6 +35,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
     load_control_bounds,
     load_control_variables,
     load_hard_constraints,
+    load_kip_bounds,
     load_objective_weights,
     load_reliability_bounds,
 )
@@ -52,7 +53,11 @@ def build_orchestrator() -> Orchestrator:
     reliability_agent = ReliabilityAgent(rb)
     optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
     guard = Guard(graph, cv, cb)
-    return Orchestrator(quality_agent, reliability_agent, optimization_agent, guard)
+    try:
+        kip_bounds = load_kip_bounds()
+    except FileNotFoundError:
+        kip_bounds = None
+    return Orchestrator(quality_agent, reliability_agent, optimization_agent, guard, kip_bounds=kip_bounds)
 
 
 def print_recommendation_card(rec) -> None:

@@ -34,11 +34,13 @@ class Orchestrator:
         reliability_agent: ReliabilityAgent,
         optimization_agent: OptimizationAgent,
         guard: Guard,
+        kip_bounds: dict | None = None,
     ):
         self.quality_agent = quality_agent
         self.reliability_agent = reliability_agent
         self.optimization_agent = optimization_agent
         self.guard = guard
+        self.kip_bounds = kip_bounds
 
     def run_cycle(
         self,
@@ -49,7 +51,9 @@ class Orchestrator:
         pak_long: pd.DataFrame,
     ) -> Recommendation:
         # Шаги 1-2 ТЗ: получить состояние, проверить полноту/актуальность/согласованность
-        state = build_process_state(decision_at, avt_kip, ht_kip, lims_long, pak_long)
+        state = build_process_state(
+            decision_at, avt_kip, ht_kip, lims_long, pak_long, kip_bounds=self.kip_bounds
+        )
 
         if not state.quality_report.sync_ok:
             return self._refusal(

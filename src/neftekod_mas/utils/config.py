@@ -1,7 +1,8 @@
-"""Загрузка YAML-конфигов допущений (config/*.yaml) -- см. ARCHITECTURE.md §4, §7."""
+"""Загрузка YAML/JSON-конфигов допущений (config/*) -- см. ARCHITECTURE.md §4, §7."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -34,6 +35,16 @@ def load_control_bounds() -> dict:
 def load_objective_weights() -> dict:
     with open(CONFIG_DIR / "objective_weights.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_kip_bounds() -> dict:
+    path = CONFIG_DIR / "kip_bounds.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} не найден. Запустите scripts/compute_kip_bounds.py (требуется NEFTEKOD_DATA_DIR)."
+        )
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def load_reliability_bounds() -> dict:
