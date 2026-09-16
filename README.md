@@ -52,6 +52,8 @@ pip install -r requirements.txt
 python scripts/build_tag_ontology.py
 python scripts/compute_reliability_bounds.py
 python scripts/compute_control_bounds.py
+python scripts/compute_kip_bounds.py
+python scripts/compute_vak_formula_accuracy.py
 
 # 2. Прогнать тесты (в т.ч. сверка ВАК-формул с эталонными расчётами)
 pytest -q
