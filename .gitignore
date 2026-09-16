@@ -1,0 +1,31 @@
+# Raw hackathon data — proprietary Gazprom Neft telemetry, never commit
+*.csv
+*.xlsx
+*.xls
+*.rar
+*.zip
+*.pdf
+data/
+raw/
+/neftekod/
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Local env
+.env

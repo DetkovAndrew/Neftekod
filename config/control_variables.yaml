@@ -1,0 +1,115 @@
+# Кандидатный набор управляющих воздействий.
+# Единственное место, где перечислен список — агенты читают отсюда,
+# список не должен дублироваться в коде (см. ARCHITECTURE.md §4).
+#
+# confidence:
+#   confirmed_from_pid — тег визуально подтверждён как регулятор с уставкой
+#                         (FC/TC/PC/LC/PIC) на одном из 4 сканов P&ID АВТ.
+#   assumption          — P&ID для установки не выдан (24-2000) либо
+#                         сопоставление "модельная переменная -> реальный тег"
+#                         сделано по эталонной схеме без независимого
+#                         подтверждения; требует инженерной проверки.
+# bounds: null           — границы ещё не определены количественно (будут
+#                         взяты как 5-95 перцентиль истории при построении
+#                         онтологии, см. scripts/build_tag_ontology.py)
+
+installations:
+  avt:
+    variables:
+      - name: avt_furnace_outlet_temp_c
+        tag: "T55"
+        unit: "°C"
+        description: "Температура на выходе из печи П-3 (FIRC2470)"
+        confidence: confirmed_from_pid
+        rationale: >
+          Эталонная схема (Ustanovka_AVT_merged.pdf) помечает эту переменную
+          литерой 'У' (управляемый параметр) для стадии АВТ. P&ID-скан
+          подтверждает регулятор TC на T55.
+        bounds: null
+
+      - name: avt_column_top_pressure_mpa
+        tag: "P22"
+        unit: "МПа"
+        description: "Давление верха колонны К-2 (PIC)"
+        confidence: assumption
+        rationale: >
+          Эталонная схема называет обобщённую переменную
+          'avt_column_pressure_mpa_abs' без привязки к конкретному тегу.
+          P22 выбран как наиболее вероятное соответствие (подтверждённый
+          PIC-регулятор на главной атмосферной колонне К-2, определяющей
+          состав дизельной фракции). Требует подтверждения технологами.
+        bounds: null
+
+      - name: avt_diesel_draw_flows
+        tags: ["F25", "F26", "F27", "F28", "F30", "F32"]
+        unit: "т/ч"
+        description: "Расходы боковых погонов и орошений К-2/К-6/К-7/К-9, влияющие на фракционный состав дизельной фракции"
+        confidence: confirmed_from_pid
+        rationale: >
+          Все теги подтверждены как FC-регуляторы на скане P&ID
+          doc00628420260914104535. Прямое влияние на T95/начало-конец
+          кипения дизельной фракции (см. формулы AVT6:240-350:*, AVT6:350:*).
+        bounds: null
+
+  hydrotreating_242000:
+    variables:
+      - name: ht_feed_flow_m3h
+        tag: "F15"
+        unit: "м³/ч"
+        description: "Расход сырья на установку (объёмный)"
+        confidence: assumption
+        rationale: >
+          Эталонная схема помечает 'У'. P&ID для 24-2000 не выдан
+          (подтверждено на Q&A: "242000 никак не относится к схеме АВТ").
+        bounds: null
+
+      - name: ht_gas_oil_ratio_m3m3
+        tags: {gas: "F25", oil: "F15"}
+        unit: "м³/м³"
+        description: "Соотношение расхода свежего ВСГ к расходу сырья"
+        confidence: assumption
+        rationale: "Эталонная схема, переменная 'У' явно названа ht_gas_oil_ratio_m3m3."
+        bounds: null
+
+      - name: ht_inlet_temp_c
+        tag: "T5"
+        unit: "°C"
+        description: "Температура ГСС на выходе Р-201 / входе в Р-202"
+        confidence: assumption
+        rationale: >
+          Эталонная схема, переменная 'У'. Q&A-сессия: эксперт подтвердил
+          прямую рычаговую связь "температура реактора гидроочистки -> сера"
+          (количественная оценка не расшифрована в транскрипте дословно,
+          ответ эксперта неразборчив — требует уточнения).
+        bounds: null
+
+      - name: ht_pressure_mpa
+        tag: "P13"
+        unit: "МПа"
+        description: "Давление на входе Р-202"
+        confidence: assumption
+        rationale: "Эталонная схема, переменная 'У'."
+        bounds: null
+
+  blending:
+    variables:
+      - name: blend_component_share_pct
+        tags: null
+        unit: "%"
+        description: "Доли компонентов товарного ДТ (Σ = 100%)"
+        confidence: design_level
+        rationale: >
+          В выданных avt_tags.csv/242000_tags.csv нет исторических тегов
+          блендинга — переменная присутствует только в эталонной схеме
+          как модельная конструкция. Оптимизация по ней возможна только
+          на уровне правил/ограничений, без исторической валидации,
+          до появления соответствующих данных.
+        bounds: [0, 100]
+
+      - name: additive_dose_kg_t
+        tags: null
+        unit: "кг/т"
+        description: "Дозировка присадок A/B"
+        confidence: design_level
+        rationale: "См. blend_component_share_pct — тот же статус данных."
+        bounds: null

@@ -1,0 +1,50 @@
+# Жёсткие ограничения — нарушение любого из них исключает вариант из рассмотрения
+# независимо от выигрыша по другим критериям (см. ARCHITECTURE.md §0, §7).
+#
+# is_assumption: true  — значение не подтверждено официальной спецификацией/ответом
+#                         эксперта на Q&A, взято из эталонной схемы организаторов
+#                         (Ustanovka_AVT_merged.pdf) или консервативной практики.
+#                         Подлежит замене одной строкой, как только появится
+#                         официальная спецификация.
+
+product_diesel:
+  sulfur_mg_kg:
+    op: "<="
+    limit: 10.0
+    is_assumption: false
+    source: "ТЗ_нефтекод.docx п.4 (буквально); подтверждено Ustanovka_AVT_merged.pdf стр.4"
+
+  t95_c:
+    op: "<="
+    limit: 360.0
+    is_assumption: true
+    source: "Ustanovka_AVT_merged.pdf стр.4, 'Контроль качества'. ГОСТ/EN явно не назван на Q&A."
+
+  cetane_number:
+    op: ">="
+    limit: 51.0
+    is_assumption: true
+    source: "Ustanovka_AVT_merged.pdf стр.4, 'Контроль качества'. ГОСТ/EN явно не назван на Q&A."
+
+  cfpp_c:
+    op: "<="
+    limit: null   # климатический класс не выдан — требует явного выбора сценария перед демонстрацией
+    is_assumption: true
+    source: "Не определено в материалах — сезонный/климатический класс ДТ не зафиксирован."
+
+blending:
+  component_share_sum_pct:
+    op: "=="
+    limit: 100.0
+    tolerance_pct: 0.5
+    is_assumption: false
+    source: "ТЗ_нефтекод.docx п.4, буквально"
+
+# Проверка совместной валидированной области управляющих переменных
+# (не только маржинальные бонды, но и совместные комбинации —
+# см. ARCHITECTURE.md §5.3, по методике Ta & Liu 2027 §3.3.3)
+operating_envelope:
+  percentile_low: 5
+  percentile_high: 95
+  check_joint_envelope: true
+  source: "Ta & Liu (2027), Fuel 429:140956, §3.3.1, §3.3.3"
