@@ -152,36 +152,56 @@ class QualityAgent:
                 )
 
         # 3) ВАК-формула -- расчётный слой, самый низкий приоритет
-        if spec.vak_formula is not None:
-            ht_tags = _ht_tag_dict(state)
-            fn = vak.HT242000_FORMULAS[spec.vak_formula]
-            try:
-                if spec.vak_needs_lims:
-                    # формула использует последнее ЛИМС-значение как один
-                    # из входов (см. модуль vak_formulas) -- если его нет
-                    # вообще, формула недоступна.
-                    lims_key = "24-2000.Pipeline.D15" if spec.metric == "density_kg_m3" else "95%.T"
-                    point_id = f"{GODT_POINT2}|{spec.lims_param}"
-                    lims = state.lab_points.get(point_id)
-                    if lims is None:
-                        return None
-                    value = fn(ht_tags, {lims_key: lims.value})
-                    confidence = ConfidenceLevel.LOW  # частично опирается на потенциально старый ЛИМС
-                else:
-                    value = fn(ht_tags)
-                    confidence = ConfidenceLevel.MEDIUM
-            except KeyError:
-                return None  # не хватает тегов КИП -- честно не оцениваем
-            return QualityMetricEstimate(
-                metric=spec.metric,
-                value=value,
-                unit=spec.unit,
-                source=DataSource.VAK_FORMULA,
-                age_minutes=None,
-                confidence=confidence,
-            )
+        return self._estimate_via_formula(spec, state)
 
-        return None
+    def _estimate_via_formula(self, spec: MetricSpec, state: ProcessState) -> QualityMetricEstimate | None:
+        if spec.vak_formula is None:
+            return None
+        ht_tags = _ht_tag_dict(state)
+        fn = vak.HT242000_FORMULAS[spec.vak_formula]
+        try:
+            if spec.vak_needs_lims:
+                # формула использует последнее ЛИМС-значение как один
+                # из входов (см. модуль vak_formulas) -- если его нет
+                # вообще, формула недоступна.
+                lims_key = "24-2000.Pipeline.D15" if spec.metric == "density_kg_m3" else "95%.T"
+                point_id = f"{GODT_POINT2}|{spec.lims_param}"
+                lims = state.lab_points.get(point_id)
+                if lims is None:
+                    return None
+                value = fn(ht_tags, {lims_key: lims.value})
+                confidence = ConfidenceLevel.LOW  # частично опирается на потенциально старый ЛИМС
+            else:
+                value = fn(ht_tags)
+                confidence = ConfidenceLevel.MEDIUM
+        except KeyError:
+            return None  # не хватает тегов КИП -- честно не оцениваем
+        return QualityMetricEstimate(
+            metric=spec.metric,
+            value=value,
+            unit=spec.unit,
+            source=DataSource.VAK_FORMULA,
+            age_minutes=None,
+            confidence=confidence,
+        )
+
+    def predict_effect(self, hypothetical_state: ProcessState) -> list[QualityMetricEstimate]:
+        """Прогноз эффекта ГИПОТЕТИЧЕСКОГО состояния (кандидата Агента
+        оптимизации) -- принципиально ТОЛЬКО через формульный/ML слой.
+
+        ЛИМС/ПАК описывают уже случившийся факт и не могут "среагировать"
+        на предполагаемое, ещё не принятое решение -- использовать их
+        текущее значение как прогноз эффекта было бы неявной и неверной
+        подменой факта прогнозом. Метрики без формулы (сера, цетановое
+        число -- см. §5.2.1 ARCHITECTURE.md) здесь принципиально
+        отсутствуют: система не делает вид, что умеет прогнозировать то,
+        для чего в материалах нет расчётной модели."""
+        results = []
+        for spec in METRIC_SPECS:
+            est = self._estimate_via_formula(spec, hypothetical_state)
+            if est is not None:
+                results.append(est)
+        return results
 
     def _check_violations(self, estimates: list[QualityMetricEstimate]) -> list[SpecViolationRisk]:
         violations: list[SpecViolationRisk] = []
@@ -197,11 +217,13 @@ class QualityAgent:
             op = cfg["op"]
             limit = float(cfg["limit"])
             margin = (limit - est.value) if op == "<=" else (est.value - limit)
+            margin_high = cfg.get("risk_margin_high")
+            margin_medium = cfg.get("risk_margin_medium")
             if margin < 0:
                 risk = RiskClass.CRITICAL
-            elif margin < 0.1 * abs(limit):
+            elif margin_high is not None and margin < margin_high:
                 risk = RiskClass.HIGH
-            elif margin < 0.25 * abs(limit):
+            elif margin_medium is not None and margin < margin_medium:
                 risk = RiskClass.MEDIUM
             else:
                 risk = RiskClass.LOW

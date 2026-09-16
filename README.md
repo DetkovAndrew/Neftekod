@@ -46,8 +46,12 @@ pip install -r requirements.txt
 ## Запуск
 
 ```bash
-# 1. Построить онтологию тегов и цифровой P&ID (генерирует config/tag_ontology.json локально)
+# 1. Построить онтологию тегов / цифровой P&ID и калибровочные конфиги
+#    (генерируют config/*.json,*.yaml локально -- это статистика/справочник,
+#    не обучение модели, см. ARCHITECTURE.md §2, §6.3, §5.3)
 python scripts/build_tag_ontology.py
+python scripts/compute_reliability_bounds.py
+python scripts/compute_control_bounds.py
 
 # 2. Прогнать тесты (в т.ч. сверка ВАК-формул с эталонными расчётами)
 pytest -q

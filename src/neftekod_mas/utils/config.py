@@ -20,6 +20,22 @@ def load_control_variables() -> dict:
         return yaml.safe_load(f)
 
 
+def load_control_bounds() -> dict:
+    path = CONFIG_DIR / "control_bounds.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} не найден. Запустите scripts/compute_control_bounds.py "
+            "(требуется NEFTEKOD_DATA_DIR с avt_tags.csv/242000_tags.csv)."
+        )
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def load_objective_weights() -> dict:
+    with open(CONFIG_DIR / "objective_weights.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 def load_reliability_bounds() -> dict:
     path = CONFIG_DIR / "reliability_bounds.yaml"
     if not path.exists():

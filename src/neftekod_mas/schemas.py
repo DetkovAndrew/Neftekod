@@ -28,6 +28,7 @@ class DataSource(str, Enum):
     VAK_FORMULA = "vak_formula"
     ML_MODEL = "ml_model"
     KIP = "kip"
+    LITERATURE_PROXY = "literature_proxy"  # см. quality/literature_proxies.py -- не производственная формула
 
 
 class ConfidenceLevel(str, Enum):
@@ -178,6 +179,8 @@ class ControlCandidate(BaseModel):
     energy_cost_proxy: Optional[float] = None
     feasible: bool
     rejection_reason: Optional[str] = None
+    caveats: list[str] = Field(default_factory=list)
+    score: Optional[float] = None
 
 
 class OptimizationResult(BaseModel):
