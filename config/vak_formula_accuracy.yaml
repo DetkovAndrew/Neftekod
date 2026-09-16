@@ -1,0 +1,21 @@
+_meta:
+  methodology: 'Backtest: prediction at time T uses only LIMS known BEFORE T (no look-ahead).
+    Statistics, not model fitting -- formula coefficients unchanged.'
+t95_c:
+  formula: 24-2000:GODT:T95
+  n: 1288
+  mae: 6.116
+  rmse: 7.8048
+  bias: -0.3512
+cfpp_c:
+  formula: 24-2000:GODT:CFPP
+  n: 414
+  mae: 11.4065
+  rmse: 11.6485
+  bias: -11.4065
+density_kg_m3:
+  formula: 24-2000:GODT:D15
+  n: 1011
+  mae: 1.6789
+  rmse: 2.4286
+  bias: 0.2718

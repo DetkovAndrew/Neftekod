@@ -39,6 +39,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
     load_kip_bounds,
     load_objective_weights,
     load_reliability_bounds,
+    load_vak_formula_accuracy,
 )
 
 
@@ -49,8 +50,9 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     rb = load_reliability_bounds()
     ow = load_objective_weights()
     graph = TagGraph.from_json(CONFIG_DIR / "tag_ontology.json")
+    formula_accuracy = load_vak_formula_accuracy()
 
-    quality_agent = QualityAgent(hc)
+    quality_agent = QualityAgent(hc, formula_accuracy=formula_accuracy)
     reliability_agent = ReliabilityAgent(rb)
     optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
     guard = Guard(graph, cv, cb)

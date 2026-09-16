@@ -83,9 +83,19 @@ def _confidence_from_age(age_minutes: float, stale_minutes: float) -> Confidence
 
 
 class QualityAgent:
-    def __init__(self, hard_constraints: dict, stale_lims_minutes: float = 24 * 60):
+    def __init__(
+        self,
+        hard_constraints: dict,
+        stale_lims_minutes: float = 24 * 60,
+        formula_accuracy: dict | None = None,
+    ):
         self.hard_constraints = hard_constraints
         self.stale_lims_minutes = stale_lims_minutes
+        # Бэктест точности ВАК-формул против ЛИМС (scripts/compute_vak_formula_accuracy.py,
+        # ARCHITECTURE.md §5.3) -- статистика, не обучение. Опционально: без
+        # него формульные оценки просто не получают typical_error/доп.
+        # понижения confidence, остальной пайплайн не ломается.
+        self.formula_accuracy = {k: v for k, v in (formula_accuracy or {}).items() if k != "_meta"}
 
     def assess(self, state: ProcessState) -> QualityAssessment:
         estimates: list[QualityMetricEstimate] = []
@@ -176,6 +186,21 @@ class QualityAgent:
                 confidence = ConfidenceLevel.MEDIUM
         except KeyError:
             return None  # не хватает тегов КИП -- честно не оцениваем
+
+        typical_error = None
+        acc = self.formula_accuracy.get(spec.metric)
+        if acc and acc.get("n", 0) > 0:
+            typical_error = acc["mae"]
+            # Если типичная ошибка формулы по бэктесту (MAE) уже сопоставима
+            # с "медианным" порогом риска этого показателя -- доверие к
+            # формуле принудительно понижается до LOW, независимо от
+            # умолчания выше. Найдено на реальном бэктесте: CFPP-формула
+            # имеет MAE=11.4°C при risk_margin_medium=8°C и системным
+            # смещением (bias≈-MAE) -- см. ARCHITECTURE.md §5.3.
+            margin_medium = self.hard_constraints.get("product_diesel", {}).get(spec.metric, {}).get("risk_margin_medium")
+            if margin_medium is not None and typical_error >= margin_medium:
+                confidence = ConfidenceLevel.LOW
+
         return QualityMetricEstimate(
             metric=spec.metric,
             value=value,
@@ -183,6 +208,7 @@ class QualityAgent:
             source=DataSource.VAK_FORMULA,
             age_minutes=None,
             confidence=confidence,
+            typical_error=typical_error,
         )
 
     def predict_effect(self, hypothetical_state: ProcessState) -> list[QualityMetricEstimate]:

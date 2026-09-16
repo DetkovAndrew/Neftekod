@@ -120,6 +120,7 @@ class QualityMetricEstimate(BaseModel):
     source: DataSource
     age_minutes: Optional[float] = None
     confidence: ConfidenceLevel
+    typical_error: Optional[float] = None  # MAE формулы по бэктесту против ЛИМС, см. vak_formula_accuracy.yaml
 
 
 class SpecViolationRisk(BaseModel):
