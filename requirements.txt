@@ -1,12 +1,19 @@
+# Базовый детерминированный путь (Data & Sync, Агент качества/надёжности/
+# оптимизации на ВАК-формулах и правилах, Оркестратор, Guard) -- всё, что
+# нужно для scripts/run_demo_cycle.py и scripts/run_history_scan.py.
 pandas>=2.0
 numpy>=1.24
 pydantic>=2.5
 PyYAML>=6.0
 openpyxl>=3.1
 pyarrow>=14.0
-pymoo>=0.6      # NSGA-II для Агента оптимизации (алгоритм, не ML-модель)
 pytest>=8.0
 
-# опционально, не требуется для базового детерминированного пути:
-# scikit-learn>=1.4
-# lightgbm>=4.3
+# ML-слой Агента качества (ARCHITECTURE.md §5.2) -- НЕ требуется для
+# базового детерминированного пути выше, нужен только для
+# scripts/train_quality_models.py (обучение подготовлено, не запущено).
+lightgbm>=4.3
+scikit-learn>=1.4
+# CPU-сборка: `pip install torch --index-url https://download.pytorch.org/whl/cpu`
+# (продакшен без интернета/GPU-гарантий, см. Q&A-сессию, ARCHITECTURE.md §9)
+torch>=2.4
