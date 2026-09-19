@@ -23,8 +23,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from neftekod_mas.ml.dataset import TARGET_METRICS, build_feature_frame, build_training_table
-from neftekod_mas.ml.split import chronological_split
+from neftekod_mas.ml.dataset import TARGET_METRICS, build_feature_frame, build_training_table, TrainingTable
+from neftekod_mas.ml.split import SharedTimeSplit, chronological_split
 from neftekod_mas.schemas import ConfidenceLevel, DataSource, ProcessState, QualityMetricEstimate
 
 DEFAULT_LGB_PARAMS: dict = {
@@ -66,6 +66,55 @@ class MetricModel:
     test_rmse: float
     n_train: int
     n_test: int
+
+
+@dataclass
+class GBMExperimentResult:
+    """Fitted models and untouched-period metrics for one common time split."""
+
+    models: dict[str, lgb.LGBMRegressor]
+    report: dict[str, dict]
+
+
+def train_gbm_on_shared_split(
+    tables: dict[str, TrainingTable], split: SharedTimeSplit, lgb_params: dict | None = None,
+) -> GBMExperimentResult:
+    """Fit one GBM per metric using train only; validation chooses tree count.
+
+    The returned test metrics are reporting-only and do not influence fitting or
+    model selection.
+    """
+    params = {**DEFAULT_LGB_PARAMS, **(lgb_params or {})}
+    models, report = {}, {}
+    for metric, table in tables.items():
+        target = pd.to_numeric(table.target, errors="coerce")
+        valid = np.isfinite(target.to_numpy(dtype=float))
+        features, target = table.features.loc[valid], target.loc[valid]
+        masks = split.masks(TrainingTable(metric, features, target, table.target_age_minutes.loc[valid]))
+        if masks["train"].sum() < 2 or not masks["validation"].any() or not masks["test"].any():
+            raise ValueError(f"{metric}: insufficient observations for common train/validation/test split")
+        train_x = features.loc[masks["train"]].rename(columns=_sanitize_feature_name)
+        validation_x = features.loc[masks["validation"]].rename(columns=_sanitize_feature_name)
+        test_x = features.loc[masks["test"]].rename(columns=_sanitize_feature_name)
+        model = lgb.LGBMRegressor(**params)
+        model.fit(train_x, target.loc[masks["train"]],
+                  eval_set=[(validation_x, target.loc[masks["validation"]])], eval_metric="l1",
+                  callbacks=[lgb.early_stopping(30, verbose=False)])
+        validation_pred = model.predict(validation_x)
+        test_pred = model.predict(test_x)
+        validation_y, test_y = target.loc[masks["validation"]].to_numpy(), target.loc[masks["test"]].to_numpy()
+        median = float(np.median(target.loc[masks["train"]]))
+        report[metric] = {
+            "n_train": int(masks["train"].sum()), "n_validation": int(masks["validation"].sum()),
+            "n_test": int(masks["test"].sum()), "best_iteration": int(model.best_iteration_ or params["n_estimators"]),
+            "validation_mae": float(np.abs(validation_pred - validation_y).mean()),
+            "validation_baseline_mae": float(np.abs(validation_y - median).mean()),
+            "test_mae": float(np.abs(test_pred - test_y).mean()),
+            "test_rmse": float(np.sqrt(((test_pred - test_y) ** 2).mean())),
+            "baseline_median_mae": float(np.abs(test_y - median).mean()),
+        }
+        models[metric] = model
+    return GBMExperimentResult(models=models, report=report)
 
 
 @dataclass

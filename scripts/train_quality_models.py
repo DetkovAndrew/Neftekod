@@ -4,13 +4,7 @@
 baseline по умолчанию, модульная PI-архитектура (`--model pinn`) как
 альтернатива для сравнения на chronological holdout.
 
-ЭТОТ СКРИПТ НЕ ЗАПУСКАЛСЯ на реальных данных завода в рамках текущей
-сессии -- по явной договорённости, обучение начинается отдельно.
-Написан и готов к запуску: вся ETL/синхронизация/split уже проверены
-на реальных данных (ml/dataset.py, ml/split.py), обучающий код проверен
-на синтетике (tests/test_baseline_gbm.py).
-
-Запуск (когда будет дано добро):
+Запуск:
     export NEFTEKOD_DATA_DIR=/home/acid/neftekod
     python scripts/train_quality_models.py --model gbm
     python scripts/train_quality_models.py --model pinn   # после установки torch
@@ -60,7 +54,9 @@ def train_gbm(out_dir: Path) -> None:
     )
 
 
-def train_pinn(out_dir: Path) -> None:
+def train_pinn(out_dir: Path, kip_dir: Path | None = None, lims_path: Path | None = None,
+               epochs: int = 500, patience: int = 30, seed: int = 0,
+               feature_mode: str = "snapshot") -> None:
     try:
         import torch  # noqa: F401
     except ImportError:
@@ -71,11 +67,12 @@ def train_pinn(out_dir: Path) -> None:
         )
     from neftekod_mas.ml.modular_pinn import train_modular_pinn  # noqa: PLC0415
 
-    avt = load_kip(data_dir() / "avt_tags.csv")
-    ht = load_kip(data_dir() / "242000_tags.csv")
-    lims = load_lims(data_dir() / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx")
+    avt = load_kip((kip_dir or data_dir()) / "avt_tags.csv")
+    ht = load_kip((kip_dir or data_dir()) / "242000_tags.csv")
+    lims = load_lims(lims_path or data_dir() / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx")
 
-    result = train_modular_pinn(avt, ht, lims)
+    result = train_modular_pinn(avt, ht, lims, epochs=epochs, patience=patience, seed=seed,
+                                feature_mode=feature_mode)
     out_dir.mkdir(parents=True, exist_ok=True)
     result.save(out_dir)
     print(f"Модель и отчёт -> {out_dir}")
@@ -85,13 +82,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=["gbm", "pinn"], default="gbm")
     parser.add_argument("--out-dir", default=str(REPO_ROOT / "runs" / "models"))
+    parser.add_argument("--kip-dir", type=Path, help="PINN: каталог двух CSV КИП")
+    parser.add_argument("--lims-path", type=Path, help="PINN: путь к файлу ЛИМС")
+    parser.add_argument("--epochs", type=int, default=500, help="PINN: максимум эпох")
+    parser.add_argument("--patience", type=int, default=30, help="PINN: ранняя остановка")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--feature-mode", choices=["snapshot", "causal_temporal"], default="snapshot",
+                        help="PINN: снимок КИП или причинные лаги/средние")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir) / args.model
     if args.model == "gbm":
         train_gbm(out_dir)
     else:
-        train_pinn(out_dir)
+        train_pinn(out_dir, args.kip_dir, args.lims_path, args.epochs, args.patience, args.seed,
+                   args.feature_mode)
 
 
 if __name__ == "__main__":

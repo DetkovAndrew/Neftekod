@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 import pandas as pd
 
@@ -25,6 +26,34 @@ class ChronoSplit:
     train: TrainingTable
     test: TrainingTable
     split_at: pd.Timestamp
+
+
+@dataclass(frozen=True)
+class SharedTimeSplit:
+    """One set of time boundaries for models sharing features or trunks."""
+
+    validation_at: pd.Timestamp
+    test_at: pd.Timestamp
+
+    def masks(self, table: TrainingTable) -> dict[str, pd.Series]:
+        index = table.target.index
+        return {
+            "train": index < self.validation_at,
+            "validation": (index >= self.validation_at) & (index < self.test_at),
+            "test": index >= self.test_at,
+        }
+
+
+def shared_time_split(tables: Mapping[str, TrainingTable], train_fraction: float = .6,
+                      validation_fraction: float = .2) -> SharedTimeSplit:
+    """Create global chronological boundaries from all labelled timestamps."""
+    if not 0 < train_fraction < 1 or not 0 < validation_fraction < 1 or train_fraction + validation_fraction >= 1:
+        raise ValueError("train_fraction and validation_fraction must be in (0, 1) and sum to < 1")
+    times = pd.DatetimeIndex(sorted({time for table in tables.values() for time in table.target.index}))
+    if len(times) < 10:
+        raise ValueError("Too few distinct observation times for train/validation/test")
+    return SharedTimeSplit(times[int(len(times) * train_fraction)],
+                           times[int(len(times) * (train_fraction + validation_fraction))])
 
 
 def chronological_split(table: TrainingTable, train_fraction: float = 0.8) -> ChronoSplit:

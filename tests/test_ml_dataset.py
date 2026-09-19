@@ -76,3 +76,22 @@ def test_chronological_split_no_shuffle_and_no_overlap():
     assert split.test.features.index.min() >= split.split_at
     # никакого перемешивания -- train целиком раньше test по времени
     assert split.train.features.index.max() < split.test.features.index.min()
+
+
+def test_causal_temporal_features_use_no_future_values():
+    start = datetime(2023, 1, 1, 0, 0)
+    avt = _kip_df(start, 20, lambda i: float(i))
+    ht = _kip_df(start, 20, lambda i: float(i))
+    # The compact temporal spec needs the real configured columns; use an
+    # intentionally small spec so this test focuses solely on causality.
+    from neftekod_mas.ml.dataset import TemporalFeatureSpec
+    spec = TemporalFeatureSpec(tags=("avt:T1",), lags=(pd.Timedelta(minutes=30),),
+                               rolling_windows=(pd.Timedelta(minutes=30),))
+    features = build_feature_frame(avt, ht, mode="causal_temporal", temporal_spec=spec)
+    time = start + pd.Timedelta(minutes=30)
+    assert features.loc[time, "avt:T1__lag_30m"] == 0.0
+    assert features.loc[time, "avt:T1__mean_30m"] == 1.5
+    future_changed = avt.copy()
+    future_changed.loc[future_changed.index > time, "T1"] = 1_000_000.0
+    changed = build_feature_frame(future_changed, ht, mode="causal_temporal", temporal_spec=spec)
+    pd.testing.assert_series_equal(features.loc[:time, "avt:T1__mean_30m"], changed.loc[:time, "avt:T1__mean_30m"])
