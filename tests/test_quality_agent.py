@@ -91,3 +91,23 @@ def test_violation_detection_sulfur_over_limit():
     v = next(v for v in qa.violations if v.metric == "sulfur_mg_kg")
     assert v.margin < 0
     assert v.risk_class.value == "critical"
+
+
+def test_exceed_probability_classes_use_measured_error():
+    from neftekod_mas.quality.quality_agent import exceed_probability
+    from neftekod_mas.schemas import ConfidenceLevel, DataSource, QualityMetricEstimate, RiskClass
+
+    assert abs(exceed_probability(0.0, 1.0) - 0.5) < 1e-9
+    assert exceed_probability(5.0, 1.18) < 0.01
+    qa = QualityAgent({"product_diesel": {"sulfur_mg_kg": {"op": "<=", "limit": 10.0, "risk_margin_high": 1.0, "risk_margin_medium": 2.5}}})
+
+    def cls(value, err):
+        est = QualityMetricEstimate(metric="sulfur_mg_kg", value=value, unit="мг/кг", source=DataSource.SOFT_SENSOR,
+                                    confidence=ConfidenceLevel.HIGH, typical_error=err)
+        return qa._check_violations([est])[0]
+
+    assert cls(8.5, 1.18).risk_class == RiskClass.MEDIUM  # P ~ 15%: наблюдение, не действие
+    assert cls(9.3, 1.18).risk_class == RiskClass.HIGH
+    assert cls(10.2, 1.18).risk_class == RiskClass.CRITICAL
+    assert cls(6.0, 1.18).risk_class == RiskClass.LOW
+    assert cls(9.3, None).exceed_probability is None  # без измеренной ошибки -- фиксированные запасы

@@ -35,6 +35,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from neftekod_mas.data.regime import STEADY_T11_MAX_CHANGE_2H_C, STEADY_T11_MIN_C
 from neftekod_mas.ml.dataset import TrainingTable
 from neftekod_mas.quality import vak_formulas as vak
 from neftekod_mas.quality.quality_agent import GODT_POINT2
@@ -44,8 +45,6 @@ from neftekod_mas.quality.quality_agent import GODT_POINT2
 warnings.filterwarnings("ignore", message="The argument 'eval_set' is deprecated")
 
 Q21_VALID_RANGE = (0.2, 24.5)
-STEADY_T11_MIN_C = 340.0
-STEADY_T11_MAX_CHANGE_2H_C = 10.0
 
 RESIDUAL_GBM_PARAMS: dict = {
     "objective": "huber",

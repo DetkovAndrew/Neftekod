@@ -77,3 +77,14 @@ def test_iter_pairs_lims_style_forward_fills_group_label():
 def test_iter_pairs_empty_marker_row_yields_nothing():
     header_rows = [(math.nan, math.nan, math.nan)]
     assert list(_iter_pairs(header_rows, marker_row_idx=0, unit_row_idx=None, group_row_idx=None)) == []
+
+
+def test_lab_status_strings_are_not_measurements():
+    import pandas as pd
+
+    from neftekod_mas.data.loaders import drop_non_numeric_values
+
+    df = pd.DataFrame({"measured_at": pd.to_datetime(["2023-06-01", "2023-06-02"]), "value": ["Pt Created", 341.5]})
+    out = drop_non_numeric_values(df)
+    assert out["value"].tolist() == [341.5]
+    assert out["value"].dtype == float

@@ -130,6 +130,15 @@ def _iter_pairs(
             i += 1
 
 
+def drop_non_numeric_values(out: pd.DataFrame) -> pd.DataFrame:
+    """Статусы вместо результата (в ЛИМС встречается "Pt Created" -- проба
+    зарегистрирована, анализ ещё не выполнен) -- это не измерение; такие
+    строки отбрасываются, value приводится к float."""
+    out = out.copy()
+    out["value"] = pd.to_numeric(out["value"], errors="coerce")
+    return out.dropna(subset=["value"])
+
+
 def load_lims(xlsx_path: Path, sheet_name: str = "Лист1") -> pd.DataFrame:
     """Возвращает длинный (long) формат:
     columns = [point_label, param, unit, measured_at, value]
@@ -156,7 +165,7 @@ def load_lims(xlsx_path: Path, sheet_name: str = "Лист1") -> pd.DataFrame:
 
     out = pd.concat(frames, ignore_index=True)
     out["measured_at"] = pd.to_datetime(out["measured_at"], errors="coerce")
-    out = out.dropna(subset=["measured_at"])
+    out = drop_non_numeric_values(out.dropna(subset=["measured_at"]))
     return out[["point_label", "param", "unit", "measured_at", "value"]].sort_values("measured_at")
 
 
@@ -184,5 +193,5 @@ def load_pak(xlsx_path: Path, sheet_name: str = "Лист1") -> pd.DataFrame:
 
     out = pd.concat(frames, ignore_index=True)
     out["measured_at"] = pd.to_datetime(out["measured_at"], errors="coerce")
-    out = out.dropna(subset=["measured_at"])
+    out = drop_non_numeric_values(out.dropna(subset=["measured_at"]))
     return out[["param", "unit", "measured_at", "value"]].sort_values("measured_at")

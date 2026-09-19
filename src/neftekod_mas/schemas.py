@@ -30,6 +30,7 @@ class DataSource(str, Enum):
     KIP = "kip"
     LITERATURE_PROXY = "literature_proxy"  # см. quality/literature_proxies.py -- не производственная формула
     PUBLISHED_CORRELATION = "published_correlation"  # см. quality/astm_correlations.py -- валидированный отраслевой стандарт (ASTM)
+    SOFT_SENSOR = "soft_sensor"  # см. quality/soft_sensors.py -- якорь (анализатор/ВАК) + поправка по прошлым ЛИМС
 
 
 class ConfidenceLevel(str, Enum):
@@ -107,6 +108,7 @@ class ProcessState(BaseModel):
     kip: dict[str, TagReading]
     lab_points: dict[str, LabPointReading]
     quality_report: DataQualityReport
+    steady_regime: Optional[bool] = None  # data/regime.py; None -- режим не определён (нет T11)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +129,9 @@ class QualityMetricEstimate(BaseModel):
 class SpecViolationRisk(BaseModel):
     metric: str
     limit: float
-    margin: float  # limit - value (в единицах метрики); отрицательное = нарушение
+    margin: float  # запас до предела в единицах метрики (с учётом op); отрицательное = нарушение
+    op: str = "<="  # направление предела из hard_constraints.yaml
+    exceed_probability: Optional[float] = None  # P(факт за пределом) по typical_error оценки; None -- ошибка не измерена
     risk_class: RiskClass
 
 
@@ -218,6 +222,17 @@ class GuardReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AgentMessage(BaseModel):
+    """Одно сообщение между агентами за цикл (orchestrator/bus.py) --
+    явный протокол обмена, воспроизводимый по журналу."""
+
+    seq: int
+    sender: str  # data_sync | quality | reliability | optimization | guard | orchestrator | llm_monitor
+    recipient: str
+    topic: str  # тип полезной нагрузки (имя pydantic-модели) или событие
+    summary: str  # короткое содержание для журнала/карточки
+
+
 class Recommendation(BaseModel):
     decision_at: datetime
     key_state: dict[str, float]
@@ -231,6 +246,8 @@ class Recommendation(BaseModel):
     llm_commentary: Optional[str] = None  # см. §9 ARCHITECTURE.md: никогда не влияет на проверки
     is_refusal: bool = False
     alternatives: list[ControlCandidate] = Field(default_factory=list)  # Парето-фронт минус выбранный (ТЗ п.3: "альтернативы")
+    llm_status: Optional[str] = None  # ok | rejected: <причина> | unavailable: <причина> | None (Monitor выключен)
+    trace: list[AgentMessage] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from neftekod_mas.quality import astm_correlations as astm
 from neftekod_mas.quality import vak_formulas as vak
@@ -33,6 +35,9 @@ from neftekod_mas.schemas import (
     SpecViolationRisk,
 )
 
+if TYPE_CHECKING:
+    from neftekod_mas.quality.soft_sensors import SoftSensorService
+
 GODT_POINT2 = "Установка 'Гидроочистка'.. Точка отбора '2'. Продукт 'Дизельное топливо'"
 # Точка 1 -- вход в гидроочистку (ФРАКЦ_ДИЗ), содержит Mass.Sulfur
 # (% масс.) -- сера СЫРЬЯ, нужна для расчёта severity ГДС
@@ -43,6 +48,29 @@ HT_FEED_POINT = "Установка 'Гидроочистка'. Точка от�
 # ненадёжным настолько, что System обязана понизить confidence до REFUSE,
 # если это единственный источник (нет ПАК/ВАК-фолбэка) -- см. ARCHITECTURE.md §13.
 CRITICAL_LIMS_AGE_MINUTES = 7 * 24 * 60  # 7 суток
+
+# Замер ЛИМС моложе этого -- фактически текущее измерение, он приоритетнее
+# soft-sensor'а. Старше -- soft-sensor точнее: по forward-chaining CV
+# (config/soft_sensor_selection.yaml) "последнее значение ЛИМС" как прогноз
+# на момент следующей пробы хуже якорной модели (сера 5.6 против 1.2 мг/кг,
+# T95 4.9 против 4.5°C, плотность 1.33 против 1.14 кг/м3), а сама модель уже
+# включает этот ЛИМС через поправку смещения.
+FRESH_LIMS_OVERRIDES_SOFT_SENSOR_MINUTES = 60
+
+# Классы риска по вероятности превышения предела, когда ошибка оценки
+# измерена (typical_error = MAE по бэктесту/CV). Ошибка считается нормальной:
+# sigma = MAE * sqrt(pi/2). Фиксированные risk_margin_* из hard_constraints.yaml
+# остаются только для оценок без измеренной ошибки (свежий ЛИМС).
+# Пороги -- допущение; обоснование: завод штатно держит серу 7.7-9.2 мг/кг при
+# пределе 10, и фиксированный запас 2.5 мг/кг объявлял "риском" ~80% суток.
+EXCEED_P_HIGH = 0.20
+EXCEED_P_MEDIUM = 0.05
+_MAE_TO_SIGMA = math.sqrt(math.pi / 2.0)
+
+
+def exceed_probability(margin: float, typical_error: float) -> float:
+    sigma = max(typical_error * _MAE_TO_SIGMA, 1e-9)
+    return 0.5 * math.erfc(margin / (sigma * math.sqrt(2.0)))
 
 
 @dataclass
@@ -102,6 +130,7 @@ class QualityAgent:
         stale_lims_minutes: float = 24 * 60,
         formula_accuracy: dict | None = None,
         astm_accuracy: dict | None = None,
+        soft_sensors: "SoftSensorService | None" = None,
     ):
         self.hard_constraints = hard_constraints
         self.stale_lims_minutes = stale_lims_minutes
@@ -113,6 +142,9 @@ class QualityAgent:
         # Бэктест ASTM D976 против реальных CetaneNumber этого завода
         # (scripts/compute_astm_cetane_accuracy.py) -- также опционально.
         self.astm_accuracy = {k: v for k, v in (astm_accuracy or {}).items() if k != "_meta"}
+        # Soft-sensor'ы, отобранные scripts/benchmark_anchored.py (quality/soft_sensors.py).
+        # Опционально: без них приоритет источников прежний (ЛИМС -> ПАК -> формула).
+        self.soft_sensors = soft_sensors
 
     def assess(self, state: ProcessState) -> QualityAssessment:
         estimates: list[QualityMetricEstimate] = []
@@ -151,19 +183,34 @@ class QualityAgent:
         )
 
     def _estimate_metric(self, spec: MetricSpec, state: ProcessState) -> QualityMetricEstimate | None:
-        # 1) ЛИМС -- контрольный факт по приоритету ТЗ
+        lims = None
         if spec.lims_param is not None:
-            point_id = f"{GODT_POINT2}|{spec.lims_param}"
-            lims = state.lab_points.get(point_id)
-            if lims is not None:
-                return QualityMetricEstimate(
-                    metric=spec.metric,
-                    value=lims.value,
-                    unit=spec.unit,
-                    source=DataSource.LIMS,
-                    age_minutes=lims.age_minutes,
-                    confidence=_confidence_from_age(lims.age_minutes, self.stale_lims_minutes),
-                )
+            lims = state.lab_points.get(f"{GODT_POINT2}|{spec.lims_param}")
+
+        # 1) Soft-sensor -- если для показателя он отобран и ЛИМС не "только что"
+        # измерен (см. FRESH_LIMS_OVERRIDES_SOFT_SENSOR_MINUTES).
+        lims_is_current = lims is not None and lims.age_minutes <= FRESH_LIMS_OVERRIDES_SOFT_SENSOR_MINUTES
+        if not lims_is_current:
+            soft = self._estimate_via_soft_sensor(spec, state)
+            if soft is not None:
+                return soft
+
+        # 2) ЛИМС -- контрольный факт по приоритету ТЗ
+        if lims is not None:
+            return QualityMetricEstimate(
+                metric=spec.metric,
+                value=lims.value,
+                unit=spec.unit,
+                source=DataSource.LIMS,
+                age_minutes=lims.age_minutes,
+                confidence=_confidence_from_age(lims.age_minutes, self.stale_lims_minutes),
+                # ошибка "последнего ЛИМС" как прогноза на сейчас -- по тому же CV,
+                # только если ЛИМС не свежий (свежий -- это измерение, а не прогноз)
+                typical_error=(
+                    None if lims_is_current or self.soft_sensors is None
+                    else self.soft_sensors.lims_typical_error(spec.metric)
+                ),
+            )
 
         # 2) ПАК -- поточный, ниже приоритетом, но не требует расчёта
         if spec.pak_param is not None:
@@ -186,6 +233,35 @@ class QualityAgent:
 
         # 3b) ВАК-формула -- расчётный слой, самый низкий приоритет
         return self._estimate_via_formula(spec, state)
+
+    def _estimate_via_soft_sensor(self, spec: MetricSpec, state: ProcessState) -> QualityMetricEstimate | None:
+        if self.soft_sensors is None:
+            return None
+        est = self.soft_sensors.estimate(spec.metric, state)
+        if est is None:
+            return None
+        margin_medium = self.hard_constraints.get("product_diesel", {}).get(spec.metric, {}).get("risk_margin_medium")
+        last_age = (
+            None if est.last_lims_at is None
+            else (state.decision_at - est.last_lims_at).total_seconds() / 60.0
+        )
+        if est.n_bias_samples < 3 or last_age is None or last_age > CRITICAL_LIMS_AGE_MINUTES:
+            confidence = ConfidenceLevel.LOW  # поправка не подкреплена свежей лабораторией
+        elif margin_medium is not None and est.typical_error >= margin_medium:
+            confidence = ConfidenceLevel.LOW
+        elif margin_medium is not None and est.typical_error < 0.5 * margin_medium:
+            confidence = ConfidenceLevel.HIGH
+        else:
+            confidence = ConfidenceLevel.MEDIUM
+        return QualityMetricEstimate(
+            metric=spec.metric,
+            value=est.value,
+            unit=spec.unit,
+            source=DataSource.SOFT_SENSOR,
+            age_minutes=last_age,  # возраст самого свежего ЛИМС в поправке
+            confidence=confidence,
+            typical_error=est.typical_error,
+        )
 
     def _estimate_cetane_via_d976(self, state: ProcessState, for_prediction: bool) -> QualityMetricEstimate | None:
         """ASTM D976 (astm_correlations.py) -- опубликованный, не
@@ -287,7 +363,12 @@ class QualityAgent:
             typical_error=typical_error,
         )
 
-    def predict_effect(self, hypothetical_state: ProcessState) -> list[QualityMetricEstimate]:
+    def predict_effect(
+        self,
+        hypothetical_state: ProcessState,
+        baseline_state: ProcessState | None = None,
+        baseline_quality: QualityAssessment | None = None,
+    ) -> list[QualityMetricEstimate]:
         """Прогноз эффекта ГИПОТЕТИЧЕСКОГО состояния (кандидата Агента
         оптимизации) -- принципиально ТОЛЬКО через формульный/ML слой.
 
@@ -299,18 +380,42 @@ class QualityAgent:
         система не делает вид, что умеет прогнозировать то, для чего в
         материалах нет расчётной модели. Цетановое число -- ИСКЛЮЧЕНИЕ
         с 2026-09: ASTM D976 (astm_correlations.py) даёт прогноз через
-        предсказываемые D15/T50, см. _estimate_cetane_via_d976."""
+        предсказываемые D15/T50, см. _estimate_cetane_via_d976.
+
+        Приращение (delta-метод). Если переданы baseline_state и
+        baseline_quality, прогноз = текущая лучшая оценка (ЛИМС/soft-sensor)
+        + [формула(кандидат) - формула(текущее)]. Формула отвечает только
+        за НАПРАВЛЕНИЕ и ВЕЛИЧИНУ изменения, а уровень берётся из самой
+        точной оценки -- систематическая ошибка формулы (например, CFPP,
+        bias ~ -11°C) при этом сокращается, и сравнение с пределом ведётся
+        от реального, а не формульного уровня."""
         results = []
         for spec in METRIC_SPECS:
             est = self._estimate_via_formula(spec, hypothetical_state)
             if est is not None:
-                results.append(est)
+                base = None if baseline_state is None else self._estimate_via_formula(spec, baseline_state)
+                results.append(self._as_increment(est, base, baseline_quality))
 
         cetane_est = self._estimate_cetane_via_d976(hypothetical_state, for_prediction=True)
         if cetane_est is not None:
-            results.append(cetane_est)
+            base = None if baseline_state is None else self._estimate_cetane_via_d976(baseline_state, for_prediction=True)
+            results.append(self._as_increment(cetane_est, base, baseline_quality))
 
         return results
+
+    @staticmethod
+    def _as_increment(
+        predicted: QualityMetricEstimate,
+        formula_baseline: QualityMetricEstimate | None,
+        baseline_quality: QualityAssessment | None,
+    ) -> QualityMetricEstimate:
+        if formula_baseline is None or baseline_quality is None:
+            return predicted
+        current = next((e for e in baseline_quality.current if e.metric == predicted.metric), None)
+        if current is None:
+            return predicted
+        delta = predicted.value - formula_baseline.value
+        return predicted.model_copy(update={"value": current.value + delta})
 
     def _check_violations(self, estimates: list[QualityMetricEstimate]) -> list[SpecViolationRisk]:
         violations: list[SpecViolationRisk] = []
@@ -328,14 +433,23 @@ class QualityAgent:
             margin = (limit - est.value) if op == "<=" else (est.value - limit)
             margin_high = cfg.get("risk_margin_high")
             margin_medium = cfg.get("risk_margin_medium")
+            p_exceed = None if not est.typical_error else exceed_probability(margin, est.typical_error)
             if margin < 0:
                 risk = RiskClass.CRITICAL
+            elif p_exceed is not None:
+                risk = (
+                    RiskClass.HIGH if p_exceed >= EXCEED_P_HIGH
+                    else RiskClass.MEDIUM if p_exceed >= EXCEED_P_MEDIUM
+                    else RiskClass.LOW
+                )
             elif margin_high is not None and margin < margin_high:
                 risk = RiskClass.HIGH
             elif margin_medium is not None and margin < margin_medium:
                 risk = RiskClass.MEDIUM
             else:
                 risk = RiskClass.LOW
-            violations.append(SpecViolationRisk(metric=metric, limit=limit, margin=margin, risk_class=risk))
+            violations.append(SpecViolationRisk(
+                metric=metric, limit=limit, margin=margin, op=op, risk_class=risk, exceed_probability=p_exceed,
+            ))
 
         return violations

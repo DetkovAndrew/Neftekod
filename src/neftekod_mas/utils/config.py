@@ -53,6 +53,15 @@ def load_astm_accuracy() -> dict:
         return yaml.safe_load(f) or {}
 
 
+def load_soft_sensor_selection() -> dict:
+    """Итог scripts/benchmark_anchored.py; пусто -- soft-sensor'ы выключены."""
+    path = CONFIG_DIR / "soft_sensor_selection.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
 def load_kip_bounds() -> dict:
     path = CONFIG_DIR / "kip_bounds.json"
     if not path.exists():

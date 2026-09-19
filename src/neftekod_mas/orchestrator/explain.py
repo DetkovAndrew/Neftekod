@@ -13,12 +13,18 @@ from neftekod_mas.schemas import ControlCandidate, EquipmentRiskAssessment, Qual
 
 
 def explain_no_action(quality: QualityAssessment, risk: EquipmentRiskAssessment) -> str:
-    return (
+    text = (
         "Режим стабилен: все оценённые показатели качества укладываются в допуски "
         f"с запасом (наихудший риск нарушения -- {_worst_violation(quality)}), индекс тяжести "
         f"режима {risk.severity_index:.2f} ({risk.risk_class.value}). Лишних управляющих "
         "действий не требуется."
     )
+    watch = [v for v in quality.violations if v.risk_class.value == "medium"]
+    if watch:
+        text += " Под наблюдением (работа близко к пределу, действие пока не нужно): " + "; ".join(
+            describe_violation(quality, v) for v in watch
+        ) + "."
+    return text
 
 
 def explain_refusal(reason: str) -> str:
@@ -52,5 +58,14 @@ def explain_recommendation(
 def _worst_violation(quality: QualityAssessment) -> str:
     if not quality.violations:
         return "нарушений не обнаружено"
-    worst = min(quality.violations, key=lambda v: v.margin)
-    return f"{worst.metric} margin={worst.margin:.3g} ({worst.risk_class.value})"
+    return describe_violation(quality, min(quality.violations, key=lambda v: v.margin))
+
+
+def describe_violation(quality: QualityAssessment, v) -> str:
+    """"sulfur_mg_kg = 9.97 при пределе <= 10 (запас 0.03, high)" -- значение,
+    предел и запас явно, без внутреннего термина margin со знаком."""
+    est = next((e for e in quality.current if e.metric == v.metric), None)
+    value = f"{v.metric} = {est.value:.4g}" if est is not None else v.metric
+    gap = f"превышение на {-v.margin:.3g}" if v.margin < 0 else f"запас {v.margin:.3g}"
+    prob = "" if v.exceed_probability is None else f", вероятность превышения {v.exceed_probability:.0%}"
+    return f"{value} при пределе {v.op} {v.limit:.4g} ({gap}{prob}, риск {v.risk_class.value})"

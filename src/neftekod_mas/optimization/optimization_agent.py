@@ -139,7 +139,7 @@ class OptimizationAgent:
         violated_metrics: set[str],
     ) -> ControlCandidate:
         modified_state = self._apply_action(state, action.tag, action.recommended_value)
-        predicted_quality = self.quality_agent.predict_effect(modified_state)
+        predicted_quality = self.quality_agent.predict_effect(modified_state, state, quality_baseline)
 
         caveats: list[str] = []
 

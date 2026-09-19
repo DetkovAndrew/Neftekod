@@ -142,3 +142,106 @@ def test_stale_data_period_refuses():
     assert rec.is_refusal is True
     assert rec.confidence.value == "refuse"
     assert "Надёжной рекомендации нет" in rec.explanation
+
+
+def _risk_inputs():
+    start = datetime(2023, 1, 1, 0, 0)
+    n = 10
+    avt = _kip_df(start, n, {})
+    ht = _kip_df(start, n, {"T5": [365.0] * n, "T6": [363.0] * n, "T11": [364.0] * n, "P8": [0.17] * n, "W7": [0.17] * n})
+    decision_at = start + timedelta(minutes=30)
+    lims = pd.DataFrame({
+        "point_label": [GODT_POINT2] * 4,
+        "param": ["Mg.Sulfur", "95%.T", "CetaneNumber", "CFPP"],
+        "unit": ["мг/кг", "°C", "ед.цет.ч.", "°C"],
+        "measured_at": [decision_at - timedelta(hours=1)] * 4,
+        "value": [9.5, 340.0, 55.0, -10.0],
+    })
+    pak = _empty_df(["param", "unit", "measured_at", "value"])
+    return decision_at, avt, ht, lims, pak
+
+
+def test_transient_regime_refuses():
+    start = datetime(2023, 1, 1, 0, 0)
+    n = 18
+    avt = _kip_df(start, n, {})
+    # разгон реактора: T11 растёт с 300 до ~385°C за 3 ч
+    ramp = [300.0 + 5.0 * i for i in range(n)]
+    ht = _kip_df(start, n, {"T5": ramp, "T6": ramp, "T11": ramp, "P8": [0.17] * n, "W7": [0.17] * n})
+    decision_at = start + timedelta(minutes=10 * (n - 1))
+    lims = pd.DataFrame({
+        "point_label": [GODT_POINT2] * 4,
+        "param": ["Mg.Sulfur", "95%.T", "CetaneNumber", "CFPP"],
+        "unit": ["мг/кг", "°C", "ед.цет.ч.", "°C"],
+        "measured_at": [decision_at - timedelta(hours=1)] * 4,
+        "value": [9.5, 340.0, 55.0, -10.0],
+    })
+    pak = _empty_df(["param", "unit", "measured_at", "value"])
+
+    rec = _make_orchestrator().run_cycle(decision_at, avt, ht, lims, pak)
+
+    assert rec.is_refusal is True
+    assert "переходном режиме" in rec.problem_or_risk
+    assert any(w.startswith("transient_regime") for w in rec.confidence_warnings)
+
+
+def test_trace_records_agent_exchange_in_order():
+    rec = _make_orchestrator().run_cycle(*_risk_inputs())
+    senders = [m.sender for m in rec.trace]
+    assert senders[0] == "data_sync"
+    for agent in ("quality", "reliability", "optimization", "guard"):
+        assert agent in senders
+    assert rec.trace[-1].recipient == "operator"
+    assert [m.seq for m in rec.trace] == list(range(1, len(rec.trace) + 1))
+
+
+class _FakeMonitorClient:
+    def __init__(self, text=None, exc=None):
+        self.text, self.exc, self.calls = text, exc, 0
+
+    def __call__(self, system, user):
+        self.calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return self.text
+
+
+def _with_monitor(client):
+    from neftekod_mas.orchestrator.llm_monitor import LLMMonitor
+    orch = _make_orchestrator()
+    orch.llm_monitor = LLMMonitor(client)
+    return orch
+
+
+def test_llm_monitor_never_changes_decision():
+    baseline = _make_orchestrator().run_cycle(*_risk_inputs())
+    rec = _with_monitor(_FakeMonitorClient(
+        "Сера близка к пределу по ЛИМС, поэтому система предлагает изменить температуру "
+        "на входе в реактор; прогноз серы основан на литературной модели и требует проверки технологом."
+    )).run_cycle(*_risk_inputs())
+    assert rec.llm_status == "ok"
+    assert rec.llm_commentary
+    assert rec.proposed_actions == baseline.proposed_actions
+    assert rec.expected_effect == baseline.expected_effect
+    assert rec.constraints_checked == baseline.constraints_checked
+    assert rec.trace[-1].sender == "llm_monitor"
+
+
+def test_llm_monitor_rejects_hallucinated_numbers_and_tags():
+    client = _FakeMonitorClient(
+        "Рекомендуется поднять 242000:T77 до 412.5 °C, это гарантированно снизит серу "
+        "и не повлияет на остальные показатели качества продукта."
+    )
+    rec = _with_monitor(client).run_cycle(*_risk_inputs())
+    assert rec.llm_commentary is None
+    assert rec.llm_status.startswith("rejected")
+    assert "412.5" in rec.llm_status and "T77" in rec.llm_status
+    assert client.calls == 2  # одна повторная попытка
+    assert rec.is_refusal is False and rec.proposed_actions
+
+
+def test_llm_monitor_unavailable_does_not_break_cycle():
+    rec = _with_monitor(_FakeMonitorClient(exc=TimeoutError("timed out"))).run_cycle(*_risk_inputs())
+    assert rec.llm_commentary is None
+    assert rec.llm_status.startswith("unavailable")
+    assert rec.proposed_actions
