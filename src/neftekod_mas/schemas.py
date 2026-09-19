@@ -259,3 +259,17 @@ class Recommendation(BaseModel):
 
 class QualityPredictor(Protocol):
     def predict(self, state: ProcessState) -> list[QualityMetricEstimate]: ...
+
+
+# Имена показателей для оператора -- в карточке не должно быть программных ключей.
+METRIC_NAMES = {
+    "sulfur_mg_kg": "сера",
+    "t95_c": "T95",
+    "cetane_number": "цетановое число",
+    "cfpp_c": "CFPP",
+    "density_kg_m3": "плотность",
+}
+
+
+def metric_name(metric: str) -> str:
+    return METRIC_NAMES.get(metric, metric)

@@ -21,6 +21,7 @@ ssh-туннель `ssh -N -L 11434:slurm-comp3:11434 hpc`):
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -136,6 +137,12 @@ def print_trace(rec) -> None:
         print(f"  {m.seq:2d}. {m.sender} -> {m.recipient} [{m.topic}] {m.summary}")
 
 
+def load_tag_descriptions() -> dict[str, str]:
+    """Смысл тегов из справочника КИП -- для фактов карточки LLM Monitor."""
+    nodes = json.loads((CONFIG_DIR / "tag_ontology.json").read_text(encoding="utf-8"))["nodes"]
+    return {k: v["description"] for k, v in nodes.items() if v.get("description")}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timestamp", required=True, help='напр. "2023-03-15 10:00:00"')
@@ -154,7 +161,10 @@ def main() -> None:
 
     selection = {} if args.no_soft_sensors else load_soft_sensor_selection()
     soft_sensors = SoftSensorService.from_history(selection, avt, ht, lims) if selection else None
-    monitor = LLMMonitor(OpenAICompatClient(args.llm_url, args.llm_model)) if args.llm_url else None
+    monitor = (
+        LLMMonitor(OpenAICompatClient(args.llm_url, args.llm_model), tag_descriptions=load_tag_descriptions())
+        if args.llm_url else None
+    )
 
     orchestrator = build_orchestrator(soft_sensors=soft_sensors, llm_monitor=monitor)
     rec = orchestrator.run_cycle(decision_at, avt, ht, lims, pak)

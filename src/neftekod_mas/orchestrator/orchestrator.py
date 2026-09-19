@@ -37,7 +37,7 @@ from neftekod_mas.schemas import (
 from neftekod_mas.utils.logging_run import NullRunLogger
 
 # MEDIUM по качеству -- "под наблюдением" (в карточке, без управляющего действия):
-# вероятность превышения 5-20% -- штатная работа у предела, а не повод менять режим.
+# показатель между порогом наблюдения и порогом действия (config/hard_constraints.yaml).
 ACTION_NEEDED_QUALITY_RISK = {RiskClass.HIGH, RiskClass.CRITICAL}
 ACTION_NEEDED_EQUIPMENT_RISK = {RiskClass.MEDIUM, RiskClass.HIGH, RiskClass.CRITICAL}
 # Флаги Data & Sync, при которых рекомендация не формируется вообще.
@@ -178,7 +178,13 @@ class Orchestrator:
         )
 
         if opt_result.no_feasible_solution:
-            return self._refusal(bus, decision_at, flags, opt_result.no_feasible_reason or "нет допустимого варианта.", key_state=key_state)
+            # сначала само нарушение, затем почему его нечем устранить
+            problem = self._problem_text(quality, risk)
+            return self._refusal(
+                bus, decision_at, flags,
+                problem[0].upper() + problem[1:] + ". " + (opt_result.no_feasible_reason or "нет допустимого варианта."),
+                key_state=key_state,
+            )
 
         # Шаг 8: выбрать и объяснить -- с независимой Guard-проверкой,
         # при BLOCK пробуем следующего по рангу кандидата (defense in depth).
@@ -210,7 +216,7 @@ class Orchestrator:
                     constraints_checked=guard_report.checks,
                     confidence=quality.overall_confidence,
                     confidence_warnings=self._warnings(state) + candidate.caveats,
-                    explanation=explain_recommendation(candidate, quality, risk),
+                    explanation=explain_recommendation(candidate, quality, risk, opt_result.feasible_candidates),
                     is_refusal=False,
                     alternatives=alternatives,
                 )
@@ -225,8 +231,11 @@ class Orchestrator:
     def _problem_text(self, quality, risk) -> str:
         bits = []
         if quality.violations:
+            # все показатели на пороге действия, худший первым; если таких нет
+            # (действие из-за оборудования) -- самый близкий к пределу
             worst = worst_violation(quality)
-            bits.append("риск нарушения: " + describe_violation(quality, worst))
+            acting = [v for v in quality.violations if v.risk_class in ACTION_NEEDED_QUALITY_RISK and v is not worst]
+            bits.append("риск нарушения: " + "; ".join(describe_violation(quality, v) for v in [worst, *acting]))
         if risk.risk_class in ACTION_NEEDED_EQUIPMENT_RISK:
             bits.append(f"тяжёлый режим оборудования (индекс {risk.severity_index:.2f})")
         return "; ".join(bits) if bits else "см. объяснение"

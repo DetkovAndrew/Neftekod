@@ -40,6 +40,9 @@ SYSTEM_PROMPT = (
     "не предлагай других действий, кроме указанных в карточке; "
     "если карточка -- отказ, объясни причину отказа и не советуй изменений режима; "
     "не утверждай ничего, чего нет в карточке; не переписывай карточку построчно; "
+    "норматив -- это предел спецификации, а порог действия и порог наблюдения -- "
+    "внутренние пороги системы, которые срабатывают раньше норматива: не называй их пределом; "
+    "не расшифровывай теги и коды сверх того, что написано в карточке; "
     "не используй markdown и списки."
 )
 
@@ -56,10 +59,23 @@ METRIC_LABELS = {
     "energy_cost_proxy": "величина изменения уставки (прокси затрат)",
 }
 MIN_COMMENTARY_CHARS = 80
+# Коды флагов Data & Sync по-русски -- иначе модель переводит их сама
+# ("stuck_sensor" -> "стучавшиеся датчики").
+FLAG_WORDS = {
+    "missing_kip_snapshot": "нет снимка КИП на момент решения",
+    "missing_kip_tag": "нет текущего значения тега",
+    "out_of_range": "значение вне правдоподобного диапазона",
+    "stuck_sensor": "датчик выдаёт одно и то же значение (возможно, завис)",
+    "stale_lims": "устаревший анализ ЛИМС",
+    "stale_pak": "устаревшее значение ПАК",
+    "stale_other": "прочие устаревшие лабораторные точки",
+    "transient_regime": "переходный режим реактора",
+}
 
 _NUMBER_RE = re.compile(r"(?<![\w.])[-−]?\d+(?:[.,]\d+)?")
 # Технологические теги: qualified ("242000:T5", "avt:F30") или голые ("T11", "Q21", "P13").
 _TAG_RE = re.compile(r"\b(?:(?:avt|242000):)?[TPFLQD]\d{1,3}\b")
+_QUALIFIED_TAG_RE = re.compile(r"\b(?:avt|242000):[A-Z]+\d{1,3}\b")
 # Не числа-факты: номера шагов, "2 ч", ГОСТ-номера и т.п. маленькие целые допустимы.
 _FREE_SMALL_INTS = {0, 1, 2, 3}
 # Обозначения показателей качества, совпадающие по форме с тегами КИП.
@@ -95,9 +111,11 @@ class OpenAICompatClient:
         return payload["choices"][0]["message"]["content"].strip()
 
 
-def card_facts(rec: Recommendation) -> str:
+def card_facts(rec: Recommendation, tag_descriptions: dict[str, str] | None = None) -> str:
     """Факты карточки в компактном текстовом виде -- ровно то, что видит
-    модель, и ровно то, против чего проверяется её ответ."""
+    модель, и ровно то, против чего проверяется её ответ. tag_descriptions
+    ("avt:D10" -> "Плотность нефти на подаче", справочник КИП) -- смысл
+    упомянутых тегов, чтобы модель не угадывала его по букве имени (ТЗ п.2)."""
     lines = [f"Момент решения: {rec.decision_at:%Y-%m-%d %H:%M}"]
     lines.append("Тип: ОТКАЗ от рекомендации" if rec.is_refusal else "Тип: рекомендация")
     if rec.key_state:
@@ -111,7 +129,7 @@ def card_facts(rec: Recommendation) -> str:
         lines.append(f"Проверка {c.check_name}: {c.verdict.value} ({c.detail})")
     lines.append(f"Уверенность: {rec.confidence.value}")
     for w in rec.confidence_warnings[:8]:
-        lines.append(f"Предупреждение: {w}")
+        lines.append(f"Предупреждение: {_humanize_warning(w, tag_descriptions or {})}")
     lines.append(f"Объяснение системы: {_humanize(rec.explanation)}")
     return "\n".join(lines)
 
@@ -123,6 +141,16 @@ def _effect(key: str, after: float, before: dict[str, float]) -> str:
         change = "без изменений" if abs(after - b) < 1e-3 * max(abs(b), 1.0) else f"{_fmt(b)} -> {_fmt(after)}"
         return f"{_label(key)}: {change}"
     return f"{_label(key)} = {_fmt(after)}"
+
+
+def _humanize_warning(w: str, tag_descriptions: dict[str, str]) -> str:
+    code, sep, rest = w.partition(": ")
+    if sep and code in FLAG_WORDS:
+        w = f"{FLAG_WORDS[code]}: {rest}"
+    for tag in dict.fromkeys(_QUALIFIED_TAG_RE.findall(w)):
+        if tag in tag_descriptions:
+            w = w.replace(tag, f"{tag} ({tag_descriptions[tag]})", 1)
+    return w
 
 
 def _label(key: str) -> str:
@@ -177,13 +205,24 @@ def ungrounded_items(text: str, facts: str) -> list[str]:
     return bad
 
 
+# Qwen при длинных карточках иногда переключается на китайский посреди
+# ответа -- такие куски не содержат чисел и grounding их не ловит.
+_FOREIGN_SCRIPT_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uff00-\uffef]")
+
+
 class LLMMonitor:
-    def __init__(self, client: ChatClient | Callable[[str, str], str], max_attempts: int = 2):
+    def __init__(
+        self,
+        client: ChatClient | Callable[[str, str], str],
+        max_attempts: int = 2,
+        tag_descriptions: dict[str, str] | None = None,
+    ):
         self.client = client
         self.max_attempts = max_attempts
+        self.tag_descriptions = tag_descriptions or {}
 
     def annotate(self, rec: Recommendation) -> Recommendation:
-        facts = card_facts(rec)
+        facts = card_facts(rec, self.tag_descriptions)
         last_reason = ""
         for _ in range(self.max_attempts):
             try:
@@ -193,6 +232,9 @@ class LLMMonitor:
             text = (text or "").strip()
             if len(text) < MIN_COMMENTARY_CHARS:
                 last_reason = f"слишком короткий ответ ({len(text)} символов)"
+                continue
+            if _FOREIGN_SCRIPT_RE.search(text):
+                last_reason = "ответ содержит текст не на русском языке"
                 continue
             bad = ungrounded_items(text, facts)
             if not bad:
