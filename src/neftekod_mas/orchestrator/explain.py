@@ -13,18 +13,19 @@ from neftekod_mas.schemas import ControlCandidate, EquipmentRiskAssessment, Qual
 
 
 def explain_no_action(quality: QualityAssessment, risk: EquipmentRiskAssessment) -> str:
-    text = (
-        "Режим стабилен: все оценённые показатели качества укладываются в допуски "
-        f"с запасом (наихудший риск нарушения -- {_worst_violation(quality)}), индекс тяжести "
-        f"режима {risk.severity_index:.2f} ({risk.risk_class.value}). Лишних управляющих "
-        "действий не требуется."
-    )
+    equipment = f"индекс тяжести режима оборудования {risk.severity_index:.2f} ({risk.risk_class.value})"
     watch = [v for v in quality.violations if v.risk_class.value == "medium"]
     if watch:
-        text += " Под наблюдением (работа близко к пределу, действие пока не нужно): " + "; ".join(
-            describe_violation(quality, v) for v in watch
-        ) + "."
-    return text
+        return (
+            "Управляющих действий не требуется: ни один показатель не достиг порога действия, "
+            f"{equipment}. Под наблюдением: "
+            + "; ".join(describe_violation(quality, v) for v in watch) + "."
+        )
+    return (
+        "Режим стабилен: все оценённые показатели качества в норме "
+        f"(наиболее близкий к пределу -- {_worst_violation(quality)}), {equipment}. "
+        "Лишних управляющих действий не требуется."
+    )
 
 
 def explain_refusal(reason: str) -> str:
@@ -58,14 +59,39 @@ def explain_recommendation(
 def _worst_violation(quality: QualityAssessment) -> str:
     if not quality.violations:
         return "нарушений не обнаружено"
-    return describe_violation(quality, min(quality.violations, key=lambda v: v.margin))
+    return describe_violation(quality, worst_violation(quality))
+
+
+_RISK_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def worst_violation(quality: QualityAssessment):
+    """Сначала по классу риска, затем по запасу в долях предела -- запасы
+    разных показателей в своих единицах (мг/кг, °C, ед.) напрямую несравнимы."""
+    return min(
+        quality.violations,
+        key=lambda v: (_RISK_ORDER[v.risk_class.value], v.margin / max(abs(v.limit), 1e-9)),
+    )
+
+
+RISK_WORDS = {
+    "low": "в норме",
+    "medium": "близко к пределу, под наблюдением",
+    "high": "вплотную к пределу",
+    "critical": "за пределом",
+}
 
 
 def describe_violation(quality: QualityAssessment, v) -> str:
-    """"sulfur_mg_kg = 9.97 при пределе <= 10 (запас 0.03, high)" -- значение,
-    предел и запас явно, без внутреннего термина margin со знаком."""
+    """"sulfur_mg_kg = 8.9 -- вплотную к пределу <= 10 (запас 1.1; порог действия 8.5)" --
+    значение, предел, запас и порог в единицах показателя, без процентов
+    (вероятности превышения на этих данных плохо откалиброваны, MODEL_AUDIT.md)."""
     est = next((e for e in quality.current if e.metric == v.metric), None)
     value = f"{v.metric} = {est.value:.4g}" if est is not None else v.metric
     gap = f"превышение на {-v.margin:.3g}" if v.margin < 0 else f"запас {v.margin:.3g}"
-    prob = "" if v.exceed_probability is None else f", вероятность превышения {v.exceed_probability:.0%}"
-    return f"{value} при пределе {v.op} {v.limit:.4g} ({gap}{prob}, риск {v.risk_class.value})"
+    threshold = ""
+    if v.margin >= 0 and v.act_at is not None:
+        threshold = f"; порог действия {v.act_at:.4g}"
+        if v.risk_class.value == "low":
+            threshold += f", наблюдения {v.watch_at:.4g}"
+    return f"{value} -- {RISK_WORDS[v.risk_class.value]} {v.op} {v.limit:.4g} ({gap}{threshold})"

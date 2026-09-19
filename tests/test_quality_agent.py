@@ -93,21 +93,34 @@ def test_violation_detection_sulfur_over_limit():
     assert v.risk_class.value == "critical"
 
 
-def test_exceed_probability_classes_use_measured_error():
-    from neftekod_mas.quality.quality_agent import exceed_probability
+def test_alert_thresholds_in_units_shift_earlier_for_less_accurate_estimates():
     from neftekod_mas.schemas import ConfidenceLevel, DataSource, QualityMetricEstimate, RiskClass
 
-    assert abs(exceed_probability(0.0, 1.0) - 0.5) < 1e-9
-    assert exceed_probability(5.0, 1.18) < 0.01
-    qa = QualityAgent({"product_diesel": {"sulfur_mg_kg": {"op": "<=", "limit": 10.0, "risk_margin_high": 1.0, "risk_margin_medium": 2.5}}})
+    cfg = {"op": "<=", "limit": 10.0, "watch_at": 7.5, "act_at": 8.5, "reference_error": 1.18,
+           "risk_margin_high": 1.0, "risk_margin_medium": 2.5}
+    qa = QualityAgent({"product_diesel": {"sulfur_mg_kg": cfg}})
 
-    def cls(value, err):
+    def check(value, err):
         est = QualityMetricEstimate(metric="sulfur_mg_kg", value=value, unit="мг/кг", source=DataSource.SOFT_SENSOR,
                                     confidence=ConfidenceLevel.HIGH, typical_error=err)
         return qa._check_violations([est])[0]
 
-    assert cls(8.5, 1.18).risk_class == RiskClass.MEDIUM  # P ~ 15%: наблюдение, не действие
-    assert cls(9.3, 1.18).risk_class == RiskClass.HIGH
-    assert cls(10.2, 1.18).risk_class == RiskClass.CRITICAL
-    assert cls(6.0, 1.18).risk_class == RiskClass.LOW
-    assert cls(9.3, None).exceed_probability is None  # без измеренной ошибки -- фиксированные запасы
+    assert check(7.0, 1.18).risk_class == RiskClass.LOW
+    assert check(8.0, 1.18).risk_class == RiskClass.MEDIUM  # под наблюдением
+    assert check(8.6, 1.18).risk_class == RiskClass.HIGH
+    assert check(10.2, 1.18).risk_class == RiskClass.CRITICAL
+    assert check(8.0, None).risk_class == RiskClass.MEDIUM  # свежий ЛИМС -- без сдвига
+    # оценка вдвое грубее -> пороги сдвинуты к норме на 1.18: действие уже с 7.32
+    worse = check(8.0, 2.36)
+    assert worse.risk_class == RiskClass.HIGH
+    assert abs(worse.act_at - 7.32) < 1e-9
+
+
+def test_alert_thresholds_for_lower_limit_metrics():
+    from neftekod_mas.quality.quality_agent import alert_thresholds
+
+    cetane = {"op": ">=", "limit": 51.0, "watch_at": 53.0, "act_at": 52.0, "reference_error": 1.23}
+    assert alert_thresholds(cetane, 1.23) == (52.0, 53.0)
+    act, watch = alert_thresholds(cetane, 2.23)
+    assert abs(act - 53.0) < 1e-9 and abs(watch - 54.0) < 1e-9
+    assert alert_thresholds({"op": "<=", "limit": 1.0}, 0.5) is None

@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -57,20 +56,16 @@ CRITICAL_LIMS_AGE_MINUTES = 7 * 24 * 60  # 7 суток
 # включает этот ЛИМС через поправку смещения.
 FRESH_LIMS_OVERRIDES_SOFT_SENSOR_MINUTES = 60
 
-# Классы риска по вероятности превышения предела, когда ошибка оценки
-# измерена (typical_error = MAE по бэктесту/CV). Ошибка считается нормальной:
-# sigma = MAE * sqrt(pi/2). Фиксированные risk_margin_* из hard_constraints.yaml
-# остаются только для оценок без измеренной ошибки (свежий ЛИМС).
-# Пороги -- допущение; обоснование: завод штатно держит серу 7.7-9.2 мг/кг при
-# пределе 10, и фиксированный запас 2.5 мг/кг объявлял "риском" ~80% суток.
-EXCEED_P_HIGH = 0.20
-EXCEED_P_MEDIUM = 0.05
-_MAE_TO_SIGMA = math.sqrt(math.pi / 2.0)
 
 
-def exceed_probability(margin: float, typical_error: float) -> float:
-    sigma = max(typical_error * _MAE_TO_SIGMA, 1e-9)
-    return 0.5 * math.erfc(margin / (sigma * math.sqrt(2.0)))
+def alert_thresholds(cfg: dict, typical_error: float | None) -> tuple[float, float] | None:
+    """(act_at, watch_at) в единицах показателя, сдвинутые к норме, если
+    оценка менее точна, чем reference_error (см. hard_constraints.yaml)."""
+    if cfg.get("act_at") is None or cfg.get("watch_at") is None:
+        return None
+    shift = max(0.0, (typical_error or 0.0) - float(cfg.get("reference_error", 0.0)))
+    sign = -1.0 if cfg["op"] == "<=" else 1.0
+    return float(cfg["act_at"]) + sign * shift, float(cfg["watch_at"]) + sign * shift
 
 
 @dataclass
@@ -433,15 +428,18 @@ class QualityAgent:
             margin = (limit - est.value) if op == "<=" else (est.value - limit)
             margin_high = cfg.get("risk_margin_high")
             margin_medium = cfg.get("risk_margin_medium")
-            p_exceed = None if not est.typical_error else exceed_probability(margin, est.typical_error)
+            thresholds = alert_thresholds(cfg, est.typical_error)
+            act_at = watch_at = None
+            if thresholds is not None:
+                act_at, watch_at = thresholds
+
+            def beyond(t: float) -> bool:
+                return est.value >= t if op == "<=" else est.value <= t
+
             if margin < 0:
                 risk = RiskClass.CRITICAL
-            elif p_exceed is not None:
-                risk = (
-                    RiskClass.HIGH if p_exceed >= EXCEED_P_HIGH
-                    else RiskClass.MEDIUM if p_exceed >= EXCEED_P_MEDIUM
-                    else RiskClass.LOW
-                )
+            elif thresholds is not None:
+                risk = RiskClass.HIGH if beyond(act_at) else RiskClass.MEDIUM if beyond(watch_at) else RiskClass.LOW
             elif margin_high is not None and margin < margin_high:
                 risk = RiskClass.HIGH
             elif margin_medium is not None and margin < margin_medium:
@@ -449,7 +447,7 @@ class QualityAgent:
             else:
                 risk = RiskClass.LOW
             violations.append(SpecViolationRisk(
-                metric=metric, limit=limit, margin=margin, op=op, risk_class=risk, exceed_probability=p_exceed,
+                metric=metric, limit=limit, margin=margin, op=op, risk_class=risk, act_at=act_at, watch_at=watch_at,
             ))
 
         return violations

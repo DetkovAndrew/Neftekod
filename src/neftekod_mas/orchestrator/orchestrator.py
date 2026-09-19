@@ -20,6 +20,7 @@ from neftekod_mas.optimization.optimization_agent import OptimizationAgent
 from neftekod_mas.orchestrator.bus import MessageBus
 from neftekod_mas.orchestrator.explain import (
     describe_violation,
+    worst_violation,
     explain_no_action,
     explain_recommendation,
     explain_refusal,
@@ -224,7 +225,7 @@ class Orchestrator:
     def _problem_text(self, quality, risk) -> str:
         bits = []
         if quality.violations:
-            worst = min(quality.violations, key=lambda v: v.margin)
+            worst = worst_violation(quality)
             bits.append("риск нарушения: " + describe_violation(quality, worst))
         if risk.risk_class in ACTION_NEEDED_EQUIPMENT_RISK:
             bits.append(f"тяжёлый режим оборудования (индекс {risk.severity_index:.2f})")

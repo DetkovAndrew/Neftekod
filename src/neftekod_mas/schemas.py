@@ -131,7 +131,8 @@ class SpecViolationRisk(BaseModel):
     limit: float
     margin: float  # запас до предела в единицах метрики (с учётом op); отрицательное = нарушение
     op: str = "<="  # направление предела из hard_constraints.yaml
-    exceed_probability: Optional[float] = None  # P(факт за пределом) по typical_error оценки; None -- ошибка не измерена
+    act_at: Optional[float] = None  # действующий порог действия (с учётом сдвига за точность оценки)
+    watch_at: Optional[float] = None  # действующий порог наблюдения
     risk_class: RiskClass
 
 
