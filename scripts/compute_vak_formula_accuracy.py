@@ -29,6 +29,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -55,8 +56,9 @@ def _kip_row_asof(ht: pd.DataFrame, ts) -> dict | None:
     if pos < 0 or (ts - idx[pos]) > KIP_TOLERANCE:
         return None
     row = ht.iloc[pos]
-    if row.isna().any():
-        return None
+    # NaN в тегах, которые формула не использует (например, служебный код
+    # 307 -> NaN в Q20), не должен выбрасывать наблюдение -- отбрасываем
+    # только если NaN попал в сам прогноз (см. ниже).
     return row.to_dict()
 
 
@@ -86,6 +88,8 @@ def backtest_metric(ht: pd.DataFrame, lims_point: pd.DataFrame, formula_key, nee
             except KeyError:
                 continue
 
+        if not np.isfinite(pred):
+            continue
         errors.append(pred - row["value"])
 
     if not errors:

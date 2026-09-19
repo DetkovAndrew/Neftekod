@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +27,10 @@ import pandas as pd
 from neftekod_mas.ml.dataset import TARGET_METRICS, build_feature_frame, build_training_table, TrainingTable
 from neftekod_mas.ml.split import SharedTimeSplit, chronological_split
 from neftekod_mas.schemas import ConfidenceLevel, DataSource, ProcessState, QualityMetricEstimate
+
+# eval_set -> eval_X/eval_y появился только в lightgbm 4.7; старый API оставлен ради
+# совместимости с окружением кластера, предупреждение о депрекации глушится точечно.
+warnings.filterwarnings("ignore", message="The argument 'eval_set' is deprecated")
 
 DEFAULT_LGB_PARAMS: dict = {
     "objective": "regression",

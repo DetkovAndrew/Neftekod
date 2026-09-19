@@ -43,8 +43,10 @@ KIP_MATCH_TOLERANCE = pd.Timedelta(minutes=30)
 # hydrogen, feed/product flows and online sulphur on hydrotreater.  The list is
 # deliberately small so sparse LIMS labels cannot be overwhelmed by hundreds of
 # arbitrary lagged tags.
+# avt:D10 (плотность нефти) исключён: после замены служебного кода 307 на
+# NaN (data/loaders.py) он пуст в 99.99% истории -- мёртвый тег.
 TEMPORAL_TAGS: tuple[str, ...] = (
-    "avt:D10", "avt:F30", "avt:F32", "avt:F34", "avt:T33", "avt:T48",
+    "avt:F30", "avt:F32", "avt:F34", "avt:T33", "avt:T48",
     "avt:T55", "242000:F9", "242000:F14", "242000:F15", "242000:F17",
     "242000:F25", "242000:P8", "242000:P13", "242000:Q20", "242000:Q21",
     "242000:T5", "242000:T6", "242000:T11", "242000:T23",

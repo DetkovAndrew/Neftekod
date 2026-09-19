@@ -47,9 +47,20 @@ def data_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def load_kip(csv_path: Path) -> pd.DataFrame:
+# Служебный код историана "нет данных / плохое качество". Точное значение
+# 307.0 встречается в 64 из 71 тегов АВТ и 15 из 26 тегов 24-2000 --
+# одновременно у температур, давлений (МПа), расходов и плотности, что
+# физически невозможно как реальное общее значение. Тег D10 (плотность
+# нефти) равен 307 в 99.99% истории. Без замены на NaN код попадал в
+# признаки моделей, в перцентильные границы и маскировал себя от
+# детектора out_of_range (границы считались по тем же испорченным данным).
+HISTORIAN_BAD_QUALITY_SENTINELS: tuple[float, ...] = (307.0,)
+
+
+def load_kip(csv_path: Path, replace_sentinels: bool = True) -> pd.DataFrame:
     """Читает avt_tags.csv / 242000_tags.csv, отбрасывает служебные
-    Unnamed-колонки, приводит `date` к datetime-индексу."""
+    Unnamed-колонки, приводит `date` к datetime-индексу, заменяет
+    служебные коды историана на NaN (см. HISTORIAN_BAD_QUALITY_SENTINELS)."""
     df = pd.read_csv(csv_path)
     unnamed_cols = [c for c in df.columns if c.startswith("Unnamed")]
     df = df.drop(columns=unnamed_cols)
@@ -57,7 +68,11 @@ def load_kip(csv_path: Path) -> pd.DataFrame:
     df = df.set_index("date").sort_index()
     # float32 достаточно для телеметрии КИП и вдвое экономнее по памяти
     # на ~189k строк x ~70 тегов, чем float64 по умолчанию.
-    return df.astype("float32")
+    df = df.astype("float32")
+    if replace_sentinels:
+        for sentinel in HISTORIAN_BAD_QUALITY_SENTINELS:
+            df = df.mask((df - sentinel).abs() < 1e-3)
+    return df
 
 
 # ---------------------------------------------------------------------------
