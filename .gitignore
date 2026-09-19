@@ -1,12 +1,18 @@
 # Raw hackathon data — proprietary Gazprom Neft telemetry, never commit
+#
+# ВАЖНО: /data/ и /raw/ здесь ЯКОРНЫЕ (ведущий слэш) — без него
+# `data/` матчит ЛЮБУЮ директорию с этим именем на любой глубине
+# дерева, включая src/neftekod_mas/data/ (реальный баг, обнаруженный
+# и исправленный: loaders.py/sync.py никогда не попадали в git из-за
+# этого якоря — см. git log).
 *.csv
 *.xlsx
 *.xls
 *.rar
 *.zip
 *.pdf
-data/
-raw/
+/data/
+/raw/
 /neftekod/
 runs/
 config/joint_envelope.npz
