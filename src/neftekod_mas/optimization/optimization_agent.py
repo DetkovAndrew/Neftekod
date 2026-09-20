@@ -98,6 +98,7 @@ class OptimizationAgent:
         reliability_agent: ReliabilityAgent,
         blending_agent=None,
         economics_agent=None,
+        sulfur_temp_response: dict | None = None,
     ):
         # Агент блендинга опционален: без config/blend_model.yaml система
         # обязана работать ровно как раньше (ARCHITECTURE.md §6.6).
@@ -105,6 +106,9 @@ class OptimizationAgent:
         # Агент экономики тоже опционален: без config/economics.yaml
         # ранжирование остаётся на прежних безразмерных прокси (§6.7).
         self.economics_agent = economics_agent
+        # Заводская калибровка отклика серы на температуру (§6.4.1).
+        # Пусто -- работает только литературный прокси, и карточка это скажет.
+        self.sulfur_temp_response = sulfur_temp_response or {}
         self.active_variables = _flatten_active_variables(control_variables_cfg)
         self.bounds = {k: v for k, v in control_bounds.items() if k != "_meta"}
         self.hard_constraints = hard_constraints.get("product_diesel", {})
@@ -216,6 +220,27 @@ class OptimizationAgent:
                 if proxy_value is None:
                     proxy_value = litproxy.sulfur_after_reactor_temp_change_flat(baseline_sulfur.value, delta_t)
                     model_note = "резервная плоская оценка 7.5%/°C (нет свежего ЛИМС по сере сырья, точка 1)"
+
+                # Заводская калибровка (§6.4.1): на истории ЭТОЙ установки
+                # измеренная чувствительность серы к температуре в разы
+                # МЕНЬШЕ литературной. Обещать литературный эффект нельзя --
+                # берём ту из двух оценок, что обещает меньше улучшения.
+                plant_pct = self.sulfur_temp_response.get("plant_calibrated_pct_per_c")
+                if plant_pct is not None:
+                    plant_value = litproxy.sulfur_after_reactor_temp_change_plant_calibrated(
+                        baseline_sulfur.value, delta_t, float(plant_pct),
+                    )
+                    conservative = litproxy.conservative_sulfur_prediction(
+                        proxy_value, plant_value, baseline_sulfur.value,
+                    )
+                    if conservative != proxy_value:
+                        model_note = (
+                            f"{model_note}; прогноз ОГРАНИЧЕН заводской калибровкой "
+                            f"{float(plant_pct):+.2f} %/°C, измеренной по отклику поточного "
+                            f"анализатора Q21 на ступени температуры "
+                            f"(литературная модель дала бы {proxy_value:.3g} мг/кг -- оптимистичнее)"
+                        )
+                    proxy_value = conservative
 
                 predicted_quality = [*predicted_quality, QualityMetricEstimate(
                     metric="sulfur_mg_kg", value=proxy_value, unit="мг/кг",

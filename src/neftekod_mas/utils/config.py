@@ -114,3 +114,15 @@ def load_economics() -> dict:
         return {}
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def load_sulfur_temp_response() -> dict:
+    """Интервенционная калибровка отклика серы на температуру реактора
+    по истории этой установки (ARCHITECTURE.md §6.4.1). Отсутствие файла
+    не ошибка: тогда используется только литературный прокси, и карточка
+    честно сообщает, что заводского подтверждения величины нет."""
+    path = CONFIG_DIR / "sulfur_temp_response.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}

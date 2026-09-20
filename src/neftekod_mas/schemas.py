@@ -160,7 +160,7 @@ class RiskFactor(BaseModel):
 
 class EquipmentRiskAssessment(BaseModel):
     decision_at: datetime
-    severity_index: float  # 0..1
+    severity_index: float  # 0..1.5; >= 1.0 -- критический режим (reliability_agent)
     risk_class: RiskClass
     factors: list[RiskFactor]
     hard_stop: bool  # True -> Агент оптимизации обязан исключить варианты, ухудшающие режим

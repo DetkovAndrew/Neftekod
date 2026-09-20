@@ -58,6 +58,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
     load_astm_accuracy,
     load_freshness,
     load_soft_sensor_selection,
+    load_sulfur_temp_response,
 )
 
 
@@ -96,6 +97,7 @@ def build_orchestrator(
     optimization_agent = OptimizationAgent(
         cv, cb, hc, ow, quality_agent, reliability_agent,
         blending_agent=blending_agent, economics_agent=economics_agent,
+        sulfur_temp_response=load_sulfur_temp_response(),
     )
     joint_envelope_path = CONFIG_DIR / "joint_envelope.npz"
     joint_envelope = (

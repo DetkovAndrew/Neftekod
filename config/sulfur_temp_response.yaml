@@ -1,0 +1,80 @@
+_meta:
+  purpose: Интервенционная оценка d(ln S)/dT по поточному анализатору Q21 этой установки
+  method: 'Step-response on the plant''s own history: temperature steps in steady
+    reactor regime, sulfur response read from the online analyser Q21 after a fixed
+    lag. Relative (log) change is used because HDS kinetics are multiplicative.'
+  closed_loop_warning: Плант работает в замкнутом контуре (подтверждено на Q&A). Температуру
+    поднимают, когда сера растёт, поэтому наивная оценка смещена К НУЛЮ. Корреляция
+    уровня серы до ступени с величиной ступени измерена и приведена ниже как доказательство.
+  temperature_tag: 242000:T5
+  sulfur_tag: 242000:Q21
+  analyzer_range_mg_kg:
+  - 0.2
+  - 24.5
+  response_lag: 0 days 04:00:00
+  pre_window: 0 days 06:00:00
+  post_window: 0 days 06:00:00
+  min_step_c: 0.8
+feedback_evidence:
+  corr_sulfur_before_vs_step_size: 0.2534
+  interpretation: Положительная корреляция означает, что температуру поднимают именно
+    при высокой сере -- регулирование с обратной связью подтверждено данными, и оценки
+    ниже занижают истинный эффект.
+estimates:
+  all_steps:
+    n: 1462
+    dln_sulfur_per_c: -0.011551
+    ci95:
+    - -0.01482
+    - -0.008282
+    pct_per_c: -1.148
+    pct_per_c_ci95:
+    - -1.471
+    - -0.825
+    significant: true
+    drift_intercept: 0.009338
+  large_steps_ge_2c:
+    n: 379
+    dln_sulfur_per_c: -0.011447
+    ci95:
+    - -0.016511
+    - -0.006383
+    pct_per_c: -1.138
+    pct_per_c_ci95:
+    - -1.638
+    - -0.636
+    significant: true
+    drift_intercept: 0.001833
+  sulfur_in_normal_band_7_9:
+    n: 925
+    dln_sulfur_per_c: -0.002143
+    ci95:
+    - -0.005215
+    - 0.000929
+    pct_per_c: -0.214
+    pct_per_c_ci95:
+    - -0.52
+    - 0.093
+    significant: false
+    drift_intercept: 0.00505
+  sulfur_with_margin_below_8:
+    n: 276
+    dln_sulfur_per_c: -0.033867
+    ci95:
+    - -0.04461
+    - -0.023124
+    pct_per_c: -3.33
+    pct_per_c_ci95:
+    - -4.363
+    - -2.286
+    significant: true
+    drift_intercept: 0.071659
+plant_calibrated_pct_per_c: -2.286
+literature_reference:
+  arrhenius_proxy_pct_per_c: -6..-10 (quality/literature_proxies.py при severity~6.8,
+    T~370 °C)
+  qa_session_pct_per_c: -5..-10 (со слов участников Q&A)
+  verdict: 'Знак и наличие эффекта на этой установке ПОДТВЕРЖДЕНЫ. Величина -- НЕТ:
+    измеренная чувствительность в разы меньше литературной. Литературный прокси используется
+    как оптимистичная граница, а для проверки достаточности воздействия берётся консервативная
+    измеренная оценка.'

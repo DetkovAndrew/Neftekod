@@ -17,3 +17,9 @@ scikit-learn>=1.4
 # CPU-сборка: `pip install torch --index-url https://download.pytorch.org/whl/cpu`
 # (продакшен без интернета/GPU-гарантий, см. Q&A-сессию, ARCHITECTURE.md §9)
 torch>=2.4
+
+# Проверка дашборда в headless-браузере (scripts/capture_dashboard.py,
+# ARCHITECTURE.md §12.2). В рантайме системы НЕ участвует: без него
+# дашборд всё равно строится, просто не снимается автоматически.
+# После установки нужен ещё `playwright install chromium`.
+playwright>=1.40
