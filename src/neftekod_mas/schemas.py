@@ -156,6 +156,12 @@ class RiskFactor(BaseModel):
     contribution: float  # 0..1, вклад в итоговый индекс тяжести режима
     is_assumption: bool
     assumption_note: Optional[str] = None
+    # False -- фактор показывается оператору, но НЕ входит в индекс тяжести
+    # режима. Так помечен ресурс катализатора: исчерпание запаса по
+    # температуре -- повод планировать перегрузку, а не признак того, что
+    # режим прямо сейчас тяжёлый. Смешивать эти две вещи в одном числе
+    # значило бы останавливать оптимизацию из-за планового события.
+    affects_index: bool = True
 
 
 class EquipmentRiskAssessment(BaseModel):
@@ -301,6 +307,10 @@ class Recommendation(BaseModel):
     # риска, здесь -- натуральные величины и деньги, часть которых опирается
     # на цены-допущения. Оператор должен видеть эту границу.
     economic_effect: Optional[dict] = None
+    # Наблюдения о состоянии оборудования, которые НЕ влияют на индекс
+    # тяжести режима, но которые оператор должен видеть -- прежде всего
+    # остаток ресурса катализатора (ARCHITECTURE.md §6.3.1).
+    equipment_notes: list[str] = Field(default_factory=list)
     llm_commentary: Optional[str] = None  # см. §9 ARCHITECTURE.md: никогда не влияет на проверки
     is_refusal: bool = False
     alternatives: list[ControlCandidate] = Field(default_factory=list)  # Парето-фронт минус выбранный (ТЗ п.3: "альтернативы")

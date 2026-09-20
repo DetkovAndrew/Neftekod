@@ -271,6 +271,7 @@ class Orchestrator:
             confidence_warnings=self._warnings(state) + candidate.caveats,
             explanation=explain_recommendation(candidate, quality, risk, opt_result.feasible_candidates),
             economic_effect=candidate.economics,
+            equipment_notes=[f.description for f in risk.factors if not f.affects_index],
             is_refusal=False,
             alternatives=alternatives,
         )

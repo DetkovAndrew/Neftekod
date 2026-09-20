@@ -1,0 +1,148 @@
+_meta:
+  purpose: Эксплуатационные границы и ресурс катализатора, извлечённые из истории
+  important: 'Это НЕ паспортные ограничения -- их не выдали. Здесь только то, что
+    подтверждается самими данными: упоры приборов/контуров, поведение перед остановами
+    и скорость дезактивации катализатора. Всё остальное в модели надёжности остаётся
+    перцентилями истории и помечено как допущение.'
+  running_feed_threshold_t_h: 20.0
+saturation:
+  F14:
+    description: Расход квенча в реактор Р-202 (контур регулирования температуры)
+    observed_max: 16.0
+    time_exactly_at_max_pct: 0.0452
+    unique_values_in_top_percent: 1042
+    points_in_top_percent: 1814
+    looks_saturated: false
+    interpretation: Обычное распределение измерений, признаков упора нет.
+  T5:
+    description: Температура ГСС на выходе Р-201
+    observed_max: 393.0915
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 630
+    points_in_top_percent: 1814
+    looks_saturated: false
+    interpretation: Обычное распределение измерений, признаков упора нет.
+  T11:
+    description: Температура на выходе из Р-202
+    observed_max: 388.5843
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 826
+    points_in_top_percent: 1814
+    looks_saturated: false
+    interpretation: Обычное распределение измерений, признаков упора нет.
+  P13:
+    description: Давление на входе Р-202
+    observed_max: 4.1444
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 67
+    points_in_top_percent: 1814
+    looks_saturated: true
+    interpretation: 'Похоже на УПОР (предел шкалы прибора или полностью открытый контур):
+      в верхнем проценте почти нет разных значений. Значения на этом уровне цензурированы
+      -- истинная величина может быть выше, и доверять им как измерению нельзя.'
+  P8:
+    description: Перепад давления на реакторе Р-202
+    observed_max: 0.2503
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 11
+    points_in_top_percent: 1814
+    looks_saturated: true
+    interpretation: 'Похоже на УПОР (предел шкалы прибора или полностью открытый контур):
+      в верхнем проценте почти нет разных значений. Значения на этом уровне цензурированы
+      -- истинная величина может быть выше, и доверять им как измерению нельзя.'
+  F25:
+    description: Расход свежего ВСГ с КЦА
+    observed_max: 18044.9043
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 1814
+    points_in_top_percent: 1814
+    looks_saturated: false
+    interpretation: Обычное распределение измерений, признаков упора нет.
+  F2:
+    description: Расход газа от ЦК-201
+    observed_max: 130969.4922
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 1795
+    points_in_top_percent: 1812
+    looks_saturated: false
+    interpretation: Обычное распределение измерений, признаков упора нет.
+  F9:
+    description: Расход сырья на установку
+    observed_max: 283.1866
+    time_exactly_at_max_pct: 0.0006
+    unique_values_in_top_percent: 1359
+    points_in_top_percent: 1814
+    looks_saturated: false
+    interpretation: Обычное распределение измерений, признаков упора нет.
+shutdowns:
+  n_shutdowns: 25
+  per_tag:
+    T11:
+      description: Температура на выходе из Р-202
+      median_max_before_stop: 120.2296
+      normal_operation_p99: 382.9862
+      exceeds_normal_p99: false
+    P8:
+      description: Перепад давления на реакторе Р-202
+      median_max_before_stop: 0.0158
+      normal_operation_p99: 0.2361
+      exceeds_normal_p99: false
+    P13:
+      description: Давление на входе Р-202
+      median_max_before_stop: 1.5736
+      normal_operation_p99: 4.0327
+      exceeds_normal_p99: false
+    F14:
+      description: Расход квенча в реактор Р-202 (контур регулирования температуры)
+      median_max_before_stop: 4.7569
+      normal_operation_p99: 13.7362
+      exceeds_normal_p99: false
+  conclusion: 'Перед остановами параметры НЕ подходили к экстремумам: остановы выглядят
+    плановыми. Значит, пороги срабатывания защит по этим данным восстановить НЕЛЬЗЯ,
+    и их отсутствие остаётся открытым допущением модели надёжности.'
+catalyst_deactivation:
+  status: ok
+  campaigns:
+  - campaign_start: '2023-01-01'
+    campaign_end: '2024-03-16'
+    days: 439
+    n_points: 50775
+    c_per_month: 1.0243
+    ci95_half_width: 0.0147
+    start_temp_c: 365.53
+  - campaign_start: '2024-05-03'
+    campaign_end: '2024-09-01'
+    days: 120
+    n_points: 15794
+    c_per_month: 0.0287
+    ci95_half_width: 0.0648
+    start_temp_c: 364.11
+  - campaign_start: '2024-09-01'
+    campaign_end: '2025-07-24'
+    days: 324
+    n_points: 36543
+    c_per_month: 0.9822
+    ci95_half_width: 0.0205
+    start_temp_c: 360.16
+  - campaign_start: '2025-07-24'
+    campaign_end: '2026-04-15'
+    days: 264
+    n_points: 30201
+    c_per_month: 1.1872
+    ci95_half_width: 0.0179
+    start_temp_c: 372.31
+  median_c_per_month: 1.0032
+  n_campaigns: 4
+  n_positive: 4
+  sulfur_band_mg_kg:
+  - 6.0
+  - 10.0
+  note: 'Скорость считается ВНУТРИ кампании: после перегрузки катализатора отсчёт
+    начинается заново, и сквозная регрессия по всей истории смешала бы разные загрузки
+    (на всей истории наклон статистически неотличим от нуля, а по кампаниям он устойчиво
+    положительный -- это и есть проявление перегрузок).'
+reactor_temperature_ceiling_c:
+  value: 388.14
+  source: 99-й перцентиль T5 в рабочем режиме
+  is_assumption: true
+  note: Потолок по истории, не паспортный предел end-of-run температуры.

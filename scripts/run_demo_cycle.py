@@ -48,6 +48,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
     CONFIG_DIR,
     load_blend_model,
     load_economics,
+    load_equipment_limits,
     load_control_bounds,
     load_control_variables,
     load_hard_constraints,
@@ -86,7 +87,7 @@ def build_orchestrator(
         astm_accuracy=astm_accuracy,
         soft_sensors=soft_sensors,
     )
-    reliability_agent = ReliabilityAgent(rb)
+    reliability_agent = ReliabilityAgent(rb, equipment_limits=load_equipment_limits())
     # Агент блендинга подключается, только если посчитана модель
     # (config/blend_model.yaml). Без неё система работает как раньше --
     # просто без рычага блендинга (ARCHITECTURE.md §6.6).
@@ -145,6 +146,12 @@ def print_recommendation_card(rec) -> None:
     print("Ожидаемый эффект:")
     for k, v in rec.expected_effect.items():
         print(f"    {k}: {v:.4g}")
+
+    if rec.equipment_notes:
+        print("-" * 78)
+        print("Состояние оборудования (не входит в индекс тяжести режима):")
+        for note in rec.equipment_notes:
+            print(f"    {note}")
 
     if rec.economic_effect:
         print("-" * 78)

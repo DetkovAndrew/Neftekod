@@ -14,7 +14,7 @@ QUICKSTART.md     — этот файл
 README.md         — установка, запуск, LLM Monitor
 ARCHITECTURE.md   — архитектура, обоснование каждого решения, ограничения (главный документ)
 MODEL_AUDIT.md    — как обучались и проверялись модели качества, найденные ошибки методологии
-src/, tests/      — код системы и 138 тестов
+src/, tests/      — код системы и 145 тестов
 config/           — готовые конфиги: онтология тегов, ВАК-формулы, пороги, границы рычагов
 scripts/          — демо-цикл, прогон по истории, обучение, скрипты для кластера
 runs/             — журналы уже выполненных циклов и дашборд dashboard.html по всей истории
@@ -36,7 +36,7 @@ export NEFTEKOD_DATA_DIR=<путь к папке data из архива>
 Проверка, что всё на месте:
 
 ```bash
-pytest -q          # ожидается: 138 passed
+pytest -q          # ожидается: 145 passed
 ```
 
 ## Первый запуск
@@ -123,6 +123,7 @@ python scripts/compute_astm_cetane_accuracy.py
 python scripts/compute_joint_envelope.py
 python scripts/compute_blend_model.py                    # модель блендинга (§6.6)
 python scripts/compute_sulfur_temperature_response.py    # калибровка серы (§6.4.1)
+python scripts/compute_equipment_limits.py                # границы и ресурс катализатора (§6.3.1)
 ```
 
 Обучение моделей качества (нужен GPU или терпение) описано в `MODEL_AUDIT.md`,

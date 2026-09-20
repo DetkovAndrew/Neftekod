@@ -126,3 +126,15 @@ def load_sulfur_temp_response() -> dict:
         return {}
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def load_equipment_limits() -> dict:
+    """Эксплуатационные границы из истории: упоры приборов, поведение
+    перед остановами, скорость дезактивации катализатора
+    (ARCHITECTURE.md §6.3.1). Отсутствие файла не ошибка -- Агент
+    надёжности тогда работает на одних перцентилях, как раньше."""
+    path = CONFIG_DIR / "equipment_limits.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
