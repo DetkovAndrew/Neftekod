@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from neftekod_mas.ml.dataset import TARGET_METRICS, build_feature_frame, build_training_table
-from neftekod_mas.ml.split import chronological_split
+from neftekod_mas.ml.split import SharedTimeSplit, chronological_split
 from neftekod_mas.schemas import ConfidenceLevel, DataSource, ProcessState, QualityMetricEstimate
 
 DEFAULT_LGB_PARAMS: dict = {
@@ -152,3 +152,36 @@ def train_all_metrics(
             test_mae=mae, test_rmse=rmse, n_train=len(split.train.target), n_test=len(split.test.target),
         )
     return predictor
+
+
+@dataclass
+class GBMBenchmarkResult:
+    report: dict[str, dict]
+
+
+def train_gbm_on_shared_split(
+    tables: dict[str, "TrainingTable"], split: SharedTimeSplit, lgb_params: dict | None = None
+) -> GBMBenchmarkResult:
+    """Локальный benchmark: обучение только на train, выбор по validation."""
+    params = {**DEFAULT_LGB_PARAMS, **(lgb_params or {})}
+    report: dict[str, dict] = {}
+    for metric in tables:
+        train, validation, test = split.train[metric], split.validation[metric], split.test[metric]
+        if train.target.empty or validation.target.empty or test.target.empty:
+            report[metric] = {"n_train": len(train.target), "n_validation": len(validation.target), "n_test": len(test.target)}
+            continue
+        model = lgb.LGBMRegressor(**params)
+        model.fit(train.features.rename(columns=_sanitize_feature_name), train.target)
+
+        def mae(part):
+            prediction = model.predict(part.features.rename(columns=_sanitize_feature_name))
+            return float(np.abs(prediction - part.target.to_numpy()).mean())
+
+        median = float(train.target.median())
+        report[metric] = {
+            "n_train": len(train.target), "n_validation": len(validation.target), "n_test": len(test.target),
+            "validation_mae": mae(validation), "test_mae": mae(test),
+            "validation_baseline_mae": float(np.abs(validation.target.to_numpy() - median).mean()),
+            "baseline_median_mae": float(np.abs(test.target.to_numpy() - median).mean()),
+        }
+    return GBMBenchmarkResult(report=report)

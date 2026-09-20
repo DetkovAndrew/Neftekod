@@ -101,7 +101,7 @@ def test_stable_period_no_action():
     assert "нарушений не обнаружено" in rec.explanation or "не создаёт" in rec.explanation or "не требуется" in rec.explanation
 
 
-def test_quality_risk_period_produces_full_recommendation():
+def test_quality_risk_with_incomplete_prediction_refuses():
     start = datetime(2023, 1, 1, 0, 0)
     n = 10
     avt = _kip_df(start, n, {})
@@ -119,11 +119,8 @@ def test_quality_risk_period_produces_full_recommendation():
     orch = _make_orchestrator()
     rec = orch.run_cycle(decision_at, avt, ht, lims, pak)
 
-    assert rec.is_refusal is False
-    assert len(rec.proposed_actions) >= 1
-    assert rec.proposed_actions[0].tag == "242000:T5"
-    assert "sulfur_mg_kg" in rec.problem_or_risk
-    assert any("ЛИТЕРАТУРНЫЙ" in w or "литератур" in w.lower() for w in rec.confidence_warnings)
+    assert rec.is_refusal is True
+    assert rec.proposed_actions == []
 
 
 def test_stale_data_period_refuses():

@@ -36,6 +36,8 @@ class Orchestrator:
         optimization_agent: OptimizationAgent,
         guard: Guard,
         kip_bounds: dict | None = None,
+        stale_lims_minutes: int = 24 * 60,
+        stale_pak_minutes: int = 60,
         run_logger=None,
     ):
         self.quality_agent = quality_agent
@@ -43,6 +45,8 @@ class Orchestrator:
         self.optimization_agent = optimization_agent
         self.guard = guard
         self.kip_bounds = kip_bounds
+        self.stale_lims_minutes = stale_lims_minutes
+        self.stale_pak_minutes = stale_pak_minutes
         self.run_logger = run_logger or NullRunLogger()
 
     def run_cycle(
@@ -55,7 +59,10 @@ class Orchestrator:
     ) -> Recommendation:
         # Шаги 1-2 ТЗ: получить состояние, проверить полноту/актуальность/согласованность
         state = build_process_state(
-            decision_at, avt_kip, ht_kip, lims_long, pak_long, kip_bounds=self.kip_bounds
+            decision_at, avt_kip, ht_kip, lims_long, pak_long,
+            kip_bounds=self.kip_bounds,
+            stale_lims_minutes=self.stale_lims_minutes,
+            stale_pak_minutes=self.stale_pak_minutes,
         )
         self.run_logger.log(decision_at, "01_process_state", state)
 
@@ -78,6 +85,11 @@ class Orchestrator:
         # Шаг 4: надёжность
         risk = self.reliability_agent.assess(state)
         self.run_logger.log(decision_at, "03_reliability_assessment", risk)
+        if risk.risk_class == RiskClass.UNKNOWN:
+            return self._refusal(
+                decision_at, state.quality_report.flags,
+                "нет обязательных признаков для оценки риска оборудования: " + ", ".join(risk.missing_inputs),
+            )
 
         quality_needs_action = any(v.risk_class in ACTION_NEEDED_QUALITY_RISK for v in quality.violations)
         equipment_needs_action = risk.risk_class in ACTION_NEEDED_EQUIPMENT_RISK

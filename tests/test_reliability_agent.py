@@ -42,8 +42,10 @@ def test_high_severity_and_hard_stop_on_elevated_delta_p():
     assert p8_factor.is_assumption is True
 
 
-def test_missing_tags_yield_zero_severity_not_crash():
+def test_missing_tags_yield_unknown_risk_not_safe_mode():
     state = _state()  # пусто -- ни одного тега нет в состоянии
     risk = ReliabilityAgent(BOUNDS).assess(state)
     assert risk.severity_index == 0.0
     assert risk.factors == []
+    assert risk.risk_class == RiskClass.UNKNOWN
+    assert risk.hard_stop is True

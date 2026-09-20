@@ -129,6 +129,21 @@ class OptimizationAgent:
 
     # -- оценка кандидата ------------------------------------------------
 
+    def _check_quality_constraints(self, predicted_quality: list[QualityMetricEstimate]) -> str | None:
+        by_metric = {estimate.metric: estimate for estimate in predicted_quality}
+        for metric, cfg in self.hard_constraints.items():
+            if cfg.get("limit") is None:
+                continue
+            estimate = by_metric.get(metric)
+            if estimate is None:
+                return f"Для обязательного ограничения {metric} нет прогноза эффекта (UNKNOWN)."
+            error = estimate.typical_error or 0.0
+            conservative = estimate.value + error if cfg["op"] == "<=" else estimate.value - error
+            limit = float(cfg["limit"])
+            if not (conservative <= limit if cfg["op"] == "<=" else conservative >= limit):
+                return f"Консервативный прогноз {metric}={conservative:.3g} нарушает предел {cfg['op']}{limit}"
+        return None
+
     def _evaluate(
         self,
         candidate_id: str,
@@ -201,21 +216,13 @@ class OptimizationAgent:
             )
 
         feasible = True
-        rejection_reason = None
-
-        for est in predicted_quality:
-            cfg = self.hard_constraints.get(est.metric)
-            if not cfg or cfg.get("limit") is None:
-                continue
-            op = cfg["op"]
-            limit = float(cfg["limit"])
-            margin = (limit - est.value) if op == "<=" else (est.value - limit)
-            if margin < 0:
-                feasible = False
-                rejection_reason = f"Прогноз {est.metric}={est.value:.3g} нарушает жёсткий предел {op}{limit}"
-                break
-
-        if feasible and predicted_risk.hard_stop:
+        rejection_reason = self._check_quality_constraints(predicted_quality)
+        if rejection_reason:
+            feasible = False
+        if feasible and predicted_risk.risk_class == RiskClass.UNKNOWN:
+            feasible = False
+            rejection_reason = "Недостаточно признаков для оценки риска оборудования (UNKNOWN)."
+        elif feasible and predicted_risk.hard_stop:
             if predicted_risk.severity_index > baseline_risk.severity_index:
                 feasible = False
                 rejection_reason = (

@@ -39,7 +39,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker
-from neftekod_mas.schemas import ControlCandidate, GuardCheck, GuardReport, GuardVerdict, ProcessState
+from neftekod_mas.schemas import ControlCandidate, GuardCheck, GuardReport, GuardVerdict, ProcessState, RiskClass
 from neftekod_mas.tags.pid_graph import TagGraph
 
 JOINT_ENVELOPE_WARN_DISTANCE = 0.5  # нормализованные единицы -- явное допущение, не откалибровано
@@ -51,6 +51,7 @@ class Guard:
         tag_graph: TagGraph,
         control_variables_cfg: dict,
         control_bounds: dict,
+        hard_constraints: dict | None = None,
         joint_envelope: JointEnvelopeChecker | None = None,
     ):
         self.tag_graph = tag_graph
@@ -60,6 +61,7 @@ class Guard:
             for var in block.get("variables", [])
         }
         self.bounds = {k: v for k, v in control_bounds.items() if k != "_meta"}
+        self.hard_constraints = (hard_constraints or {}).get("product_diesel", {})
         self.joint_envelope = joint_envelope
 
     def review(
@@ -90,8 +92,8 @@ class Guard:
                 checks.append(GuardCheck(check_name="tag_exists", verdict=GuardVerdict.PASS, detail=action.tag))
             elif action.tag:
                 checks.append(GuardCheck(
-                    check_name="tag_exists", verdict=GuardVerdict.WARN,
-                    detail=f"Тег {action.tag} отсутствует в цифровом P&ID (нормально для 24-2000, P&ID не выдан)",
+                    check_name="tag_exists", verdict=GuardVerdict.BLOCK,
+                    detail=f"Тег {action.tag} отсутствует в цифровом P&ID",
                 ))
 
             b = self.bounds.get(action.tag or "")
@@ -103,6 +105,9 @@ class Guard:
                         check_name="within_bounds", verdict=GuardVerdict.BLOCK,
                         detail=f"{action.recommended_value} вне валидированного диапазона [{b['p05']}, {b['p95']}]",
                     ))
+            else:
+                checks.append(GuardCheck(check_name="within_bounds", verdict=GuardVerdict.BLOCK,
+                    detail=f"Для {action.tag} не задан диапазон"))
 
             if action.tag and self.tag_graph.tag_exists(action.tag):
                 downstream = self.tag_graph.downstream_impact(action.tag)
@@ -111,7 +116,26 @@ class Guard:
                     detail=f"Затронуто (грубая топология стадий): {len(downstream)} тегов ниже по потоку",
                 ))
 
-        checks.append(GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.PASS, detail="Переменные блендинга не активны в v1"))
+        checks.append(GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.NOT_APPLICABLE,
+            detail="Блендинг не участвует в кандидате"))
+        by_metric = {estimate.metric: estimate for estimate in candidate.predicted_quality}
+        for metric, cfg in self.hard_constraints.items():
+            if cfg.get("limit") is None:
+                continue
+            estimate = by_metric.get(metric)
+            if estimate is None:
+                checks.append(GuardCheck(check_name=f"quality_{metric}", verdict=GuardVerdict.BLOCK,
+                    detail=f"Нет прогноза обязательного показателя {metric} (UNKNOWN)"))
+                continue
+            error = estimate.typical_error or 0.0
+            conservative = estimate.value + error if cfg["op"] == "<=" else estimate.value - error
+            limit = float(cfg["limit"])
+            passed = conservative <= limit if cfg["op"] == "<=" else conservative >= limit
+            checks.append(GuardCheck(check_name=f"quality_{metric}", verdict=GuardVerdict.PASS if passed else GuardVerdict.BLOCK,
+                detail=f"консервативный прогноз {conservative:.3g} {cfg['op']} {limit}"))
+        if candidate.predicted_risk.risk_class == RiskClass.UNKNOWN:
+            checks.append(GuardCheck(check_name="equipment_risk_coverage", verdict=GuardVerdict.BLOCK,
+                detail="Недостаточно признаков для оценки риска оборудования"))
 
         if self.joint_envelope is not None and state is not None:
             current_values = {tag: r.value for tag, r in state.kip.items()}

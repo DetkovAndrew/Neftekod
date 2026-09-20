@@ -40,6 +40,7 @@ class ConfidenceLevel(str, Enum):
 
 
 class RiskClass(str, Enum):
+    UNKNOWN = "unknown"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -48,6 +49,7 @@ class RiskClass(str, Enum):
 
 class GuardVerdict(str, Enum):
     PASS = "pass"
+    NOT_APPLICABLE = "not_applicable"
     WARN = "warn"
     BLOCK = "block"
 
@@ -157,6 +159,8 @@ class EquipmentRiskAssessment(BaseModel):
     risk_class: RiskClass
     factors: list[RiskFactor]
     hard_stop: bool  # True -> Агент оптимизации обязан исключить варианты, ухудшающие режим
+    coverage: float = 1.0
+    missing_inputs: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

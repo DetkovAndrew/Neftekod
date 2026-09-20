@@ -54,10 +54,12 @@ class ReliabilityAgent:
         weighted_sum = 0.0
         weight_total = 0.0
 
+        missing_inputs: list[str] = []
         for tag, weight in FACTOR_WEIGHTS.items():
             qid = f"242000:{tag}"
             reading = state.kip.get(qid)
             if reading is None or tag not in self.bounds:
+                missing_inputs.append(qid)
                 continue
             sev = _tag_severity(reading.value, self.bounds[tag])
             factors.append(
@@ -72,6 +74,13 @@ class ReliabilityAgent:
             weighted_sum += weight * sev
             weight_total += weight
 
+        coverage = weight_total / sum(FACTOR_WEIGHTS.values())
+        if missing_inputs:
+            return EquipmentRiskAssessment(
+                decision_at=state.decision_at, severity_index=0.0,
+                risk_class=RiskClass.UNKNOWN, factors=factors, hard_stop=True,
+                coverage=coverage, missing_inputs=missing_inputs,
+            )
         weighted_avg = (weighted_sum / weight_total) if weight_total > 0 else 0.0
         # Итоговый индекс -- максимум из взвешенного среднего и худшего
         # отдельного фактора: единичный фактор на пределе (напр. только
@@ -99,4 +108,6 @@ class ReliabilityAgent:
             risk_class=risk_class,
             factors=factors,
             hard_stop=hard_stop,
+            coverage=coverage,
+            missing_inputs=[],
         )

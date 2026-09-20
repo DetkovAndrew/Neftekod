@@ -42,6 +42,7 @@ from neftekod_mas.utils.config import (  # noqa: E402
     load_reliability_bounds,
     load_vak_formula_accuracy,
     load_astm_accuracy,
+    load_freshness,
 )
 
 
@@ -54,15 +55,23 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     graph = TagGraph.from_json(CONFIG_DIR / "tag_ontology.json")
     formula_accuracy = load_vak_formula_accuracy()
     astm_accuracy = load_astm_accuracy()
+    freshness = load_freshness()
 
-    quality_agent = QualityAgent(hc, formula_accuracy=formula_accuracy, astm_accuracy=astm_accuracy)
+    quality_agent = QualityAgent(
+        hc,
+        stale_lims_minutes=freshness["lims"]["fresh_minutes"],
+        usable_lims_minutes=freshness["lims"]["usable_minutes"],
+        usable_pak_minutes=freshness["pak"]["usable_minutes"],
+        formula_accuracy=formula_accuracy,
+        astm_accuracy=astm_accuracy,
+    )
     reliability_agent = ReliabilityAgent(rb)
     optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
     joint_envelope_path = CONFIG_DIR / "joint_envelope.npz"
     joint_envelope = (
         JointEnvelopeChecker.from_npz(joint_envelope_path, cb) if joint_envelope_path.exists() else None
     )
-    guard = Guard(graph, cv, cb, joint_envelope=joint_envelope)
+    guard = Guard(graph, cv, cb, hard_constraints=hc, joint_envelope=joint_envelope)
     try:
         kip_bounds = load_kip_bounds()
     except FileNotFoundError:
@@ -70,7 +79,10 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     run_logger = RunLogger(REPO_ROOT / "runs") if enable_run_logging else None
     return Orchestrator(
         quality_agent, reliability_agent, optimization_agent, guard,
-        kip_bounds=kip_bounds, run_logger=run_logger,
+        kip_bounds=kip_bounds,
+        stale_lims_minutes=freshness["lims"]["fresh_minutes"],
+        stale_pak_minutes=freshness["pak"]["fresh_minutes"],
+        run_logger=run_logger,
     )
 
 

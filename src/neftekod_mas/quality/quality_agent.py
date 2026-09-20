@@ -43,6 +43,7 @@ HT_FEED_POINT = "Установка 'Гидроочистка'. Точка от�
 # ненадёжным настолько, что System обязана понизить confidence до REFUSE,
 # если это единственный источник (нет ПАК/ВАК-фолбэка) -- см. ARCHITECTURE.md §13.
 CRITICAL_LIMS_AGE_MINUTES = 7 * 24 * 60  # 7 суток
+DEFAULT_USABLE_PAK_MINUTES = 3 * 60
 
 
 @dataclass
@@ -102,9 +103,13 @@ class QualityAgent:
         stale_lims_minutes: float = 24 * 60,
         formula_accuracy: dict | None = None,
         astm_accuracy: dict | None = None,
+        usable_lims_minutes: float = CRITICAL_LIMS_AGE_MINUTES,
+        usable_pak_minutes: float = DEFAULT_USABLE_PAK_MINUTES,
     ):
         self.hard_constraints = hard_constraints
         self.stale_lims_minutes = stale_lims_minutes
+        self.usable_lims_minutes = usable_lims_minutes
+        self.usable_pak_minutes = usable_pak_minutes
         # Бэктест точности ВАК-формул против ЛИМС (scripts/compute_vak_formula_accuracy.py,
         # ARCHITECTURE.md §5.3) -- статистика, не обучение. Опционально: без
         # него формульные оценки просто не получают typical_error/доп.
@@ -138,7 +143,7 @@ class QualityAgent:
             # не удалось оценить вообще -- это повод для отказа, не для
             # "среднего" доверия по оставшимся.
             covered = {e.metric for e in estimates}
-            required = {m for m in self.hard_constraints.get("product_diesel", {})}
+            required = {m for m, cfg in self.hard_constraints.get("product_diesel", {}).items() if cfg.get("limit") is not None}
             missing_required = {m for m in required if m in {s.metric for s in METRIC_SPECS}} - covered
             if missing_required:
                 overall = ConfidenceLevel.REFUSE
@@ -155,7 +160,7 @@ class QualityAgent:
         if spec.lims_param is not None:
             point_id = f"{GODT_POINT2}|{spec.lims_param}"
             lims = state.lab_points.get(point_id)
-            if lims is not None:
+            if lims is not None and lims.age_minutes <= self.usable_lims_minutes:
                 return QualityMetricEstimate(
                     metric=spec.metric,
                     value=lims.value,
@@ -168,7 +173,7 @@ class QualityAgent:
         # 2) ПАК -- поточный, ниже приоритетом, но не требует расчёта
         if spec.pak_param is not None:
             pak = state.lab_points.get(spec.pak_param)
-            if pak is not None:
+            if pak is not None and pak.age_minutes <= self.usable_pak_minutes:
                 return QualityMetricEstimate(
                     metric=spec.metric,
                     value=pak.value,
@@ -252,7 +257,7 @@ class QualityAgent:
                 lims_key = "24-2000.Pipeline.D15" if spec.metric == "density_kg_m3" else "95%.T"
                 point_id = f"{GODT_POINT2}|{spec.lims_param}"
                 lims = state.lab_points.get(point_id)
-                if lims is None:
+                if lims is None or lims.age_minutes > self.usable_lims_minutes:
                     return None
                 value = fn(ht_tags, {lims_key: lims.value})
                 confidence = ConfidenceLevel.LOW  # частично опирается на потенциально старый ЛИМС
