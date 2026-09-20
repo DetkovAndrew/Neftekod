@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 
 import pandas as pd
 
@@ -27,15 +28,32 @@ class ChronoSplit:
     split_at: pd.Timestamp
 
 
-@dataclass
+@dataclass(frozen=True)
 class SharedTimeSplit:
-    """Общие границы train/validation/test для всех асинхронных целей."""
+    """One set of time boundaries for models sharing features or trunks."""
 
-    train: dict[str, TrainingTable]
-    validation: dict[str, TrainingTable]
-    test: dict[str, TrainingTable]
     validation_at: pd.Timestamp
     test_at: pd.Timestamp
+
+    def masks(self, table: TrainingTable) -> dict[str, pd.Series]:
+        index = table.target.index
+        return {
+            "train": index < self.validation_at,
+            "validation": (index >= self.validation_at) & (index < self.test_at),
+            "test": index >= self.test_at,
+        }
+
+
+def shared_time_split(tables: Mapping[str, TrainingTable], train_fraction: float = .6,
+                      validation_fraction: float = .2) -> SharedTimeSplit:
+    """Create global chronological boundaries from all labelled timestamps."""
+    if not 0 < train_fraction < 1 or not 0 < validation_fraction < 1 or train_fraction + validation_fraction >= 1:
+        raise ValueError("train_fraction and validation_fraction must be in (0, 1) and sum to < 1")
+    times = pd.DatetimeIndex(sorted({time for table in tables.values() for time in table.target.index}))
+    if len(times) < 10:
+        raise ValueError("Too few distinct observation times for train/validation/test")
+    return SharedTimeSplit(times[int(len(times) * train_fraction)],
+                           times[int(len(times) * (train_fraction + validation_fraction))])
 
 
 def chronological_split(table: TrainingTable, train_fraction: float = 0.8) -> ChronoSplit:
@@ -66,35 +84,3 @@ def chronological_split(table: TrainingTable, train_fraction: float = 0.8) -> Ch
         target_age_minutes=table.target_age_minutes[test_mask],
     )
     return ChronoSplit(train=train, test=test, split_at=split_at)
-
-
-def _slice(table: TrainingTable, mask) -> TrainingTable:
-    return TrainingTable(
-        metric=table.metric,
-        features=table.features[mask],
-        target=table.target[mask],
-        target_age_minutes=table.target_age_minutes[mask],
-    )
-
-
-def shared_time_split(
-    tables: dict[str, TrainingTable], train_fraction: float = 0.60, validation_fraction: float = 0.20
-) -> SharedTimeSplit:
-    """Разделяет цели общими временными границами без перемешивания."""
-    if not 0 < train_fraction < 1 or not 0 < validation_fraction < 1 or train_fraction + validation_fraction >= 1:
-        raise ValueError("Доли train и validation должны быть положительными, а их сумма — меньше 1")
-    moments = pd.DatetimeIndex([])
-    for table in tables.values():
-        moments = moments.union(pd.DatetimeIndex(table.target.index))
-    moments = moments.sort_values().unique()
-    if len(moments) < 10:
-        raise ValueError(f"Слишком мало уникальных временных точек ({len(moments)}) для shared split")
-    validation_at = moments[int(len(moments) * train_fraction)]
-    test_at = moments[int(len(moments) * (train_fraction + validation_fraction))]
-    train, validation, test = {}, {}, {}
-    for metric, table in tables.items():
-        idx = table.features.index
-        train[metric] = _slice(table, idx < validation_at)
-        validation[metric] = _slice(table, (idx >= validation_at) & (idx < test_at))
-        test[metric] = _slice(table, idx >= test_at)
-    return SharedTimeSplit(train, validation, test, validation_at, test_at)

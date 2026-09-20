@@ -27,6 +27,23 @@ def test_load_kip_drops_unnamed_columns_and_indexes_by_date(tmp_path):
     assert df.iloc[0]["T1"] == pytest.approx(130.5, abs=1e-3)
 
 
+def test_load_kip_replaces_historian_sentinel_307_with_nan(tmp_path):
+    csv_path = tmp_path / "242000_tags.csv"
+    csv_path.write_text(
+        "Unnamed: 0,date,Q21,T11\n"
+        "0,2023-01-01 00:00:00,307,365.2\n"
+        "1,2023-01-01 00:10:00,8.4,307.0\n"
+        "2,2023-01-01 00:20:00,8.5,306.9\n",
+        encoding="utf-8",
+    )
+    df = load_kip(csv_path)
+    assert math.isnan(df.iloc[0]["Q21"])
+    assert math.isnan(df.iloc[1]["T11"])
+    assert df.iloc[2]["T11"] == pytest.approx(306.9, abs=1e-3)  # близкое, но не равное 307 -- реальное значение
+    raw = load_kip(csv_path, replace_sentinels=False)
+    assert raw.iloc[0]["Q21"] == pytest.approx(307.0)
+
+
 def test_iter_pairs_pak_style_skips_nan_spacer_columns_not_data():
     """Регрессия на реальный найденный баг: пустая ячейка после
     pd.read_excel -- float NaN, не Python None. Проверка `is not None`
@@ -60,3 +77,14 @@ def test_iter_pairs_lims_style_forward_fills_group_label():
 def test_iter_pairs_empty_marker_row_yields_nothing():
     header_rows = [(math.nan, math.nan, math.nan)]
     assert list(_iter_pairs(header_rows, marker_row_idx=0, unit_row_idx=None, group_row_idx=None)) == []
+
+
+def test_lab_status_strings_are_not_measurements():
+    import pandas as pd
+
+    from neftekod_mas.data.loaders import drop_non_numeric_values
+
+    df = pd.DataFrame({"measured_at": pd.to_datetime(["2023-06-01", "2023-06-02"]), "value": ["Pt Created", 341.5]})
+    out = drop_non_numeric_values(df)
+    assert out["value"].tolist() == [341.5]
+    assert out["value"].dtype == float

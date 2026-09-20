@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import pandas as pd
 
@@ -37,6 +38,31 @@ TARGET_METRICS: dict[str, str] = {
 }
 
 KIP_MATCH_TOLERANCE = pd.Timedelta(minutes=30)
+
+# Chosen from the process ontology: crude feed density/cuts on AVT and reactor,
+# hydrogen, feed/product flows and online sulphur on hydrotreater.  The list is
+# deliberately small so sparse LIMS labels cannot be overwhelmed by hundreds of
+# arbitrary lagged tags.
+# avt:D10 (плотность нефти) исключён: после замены служебного кода 307 на
+# NaN (data/loaders.py) он пуст в 99.99% истории -- мёртвый тег.
+TEMPORAL_TAGS: tuple[str, ...] = (
+    "avt:F30", "avt:F32", "avt:F34", "avt:T33", "avt:T48",
+    "avt:T55", "242000:F9", "242000:F14", "242000:F15", "242000:F17",
+    "242000:F25", "242000:P8", "242000:P13", "242000:Q20", "242000:Q21",
+    "242000:T5", "242000:T6", "242000:T11", "242000:T23",
+)
+
+
+@dataclass(frozen=True)
+class TemporalFeatureSpec:
+    """Causal history features sampled on the native 10-minute KIP grid."""
+
+    tags: tuple[str, ...] = TEMPORAL_TAGS
+    lags: tuple[pd.Timedelta, ...] = (pd.Timedelta(minutes=30), pd.Timedelta(hours=2))
+    rolling_windows: tuple[pd.Timedelta, ...] = (pd.Timedelta(minutes=30), pd.Timedelta(hours=2))
+
+
+FeatureMode = Literal["snapshot", "causal_temporal"]
 
 
 @dataclass
@@ -54,7 +80,12 @@ def _prefixed(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
 _KIP_TIME_COL = "kip_time"
 
 
-def build_feature_frame(avt_kip: pd.DataFrame, ht_kip: pd.DataFrame) -> pd.DataFrame:
+def build_feature_frame(
+    avt_kip: pd.DataFrame,
+    ht_kip: pd.DataFrame,
+    mode: FeatureMode = "snapshot",
+    temporal_spec: TemporalFeatureSpec = TemporalFeatureSpec(),
+) -> pd.DataFrame:
     """Объединённая по времени (inner join индекса, обе установки
     синхронны по 10-мин сетке, см. ТЗ) таблица признаков КИП. Имя
     индекса устанавливается ЯВНО (не полагаемся на то, что вызывающий
@@ -63,9 +94,31 @@ def build_feature_frame(avt_kip: pd.DataFrame, ht_kip: pd.DataFrame) -> pd.DataF
     на любых данных, не прошедших именно через тот загрузчик."""
     avt = _prefixed(avt_kip, "avt")
     ht = _prefixed(ht_kip, "242000")
-    merged = avt.join(ht, how="inner")
+    merged = avt.join(ht, how="inner").sort_index()
     merged.index.name = _KIP_TIME_COL
-    return merged
+    if mode == "snapshot":
+        return merged
+    if mode != "causal_temporal":
+        raise ValueError(f"Unknown feature mode: {mode}")
+
+    missing = set(temporal_spec.tags) - set(merged.columns)
+    if missing:
+        raise ValueError(f"Tags configured for temporal features are absent: {sorted(missing)}")
+    selected = merged.loc[:, list(temporal_spec.tags)]
+    extras: dict[str, pd.Series] = {}
+    # shift/rolling use only the present or preceding KIP states. No value after
+    # the decision timestamp can enter a feature.
+    for lag in temporal_spec.lags:
+        label = f"lag_{int(lag.total_seconds() // 60)}m"
+        for tag in temporal_spec.tags:
+            extras[f"{tag}__{label}"] = selected[tag].shift(freq=lag)
+    for window in temporal_spec.rolling_windows:
+        label = f"mean_{int(window.total_seconds() // 60)}m"
+        averages = selected.rolling(window=window, min_periods=1, closed="both").mean()
+        for tag in temporal_spec.tags:
+            extras[f"{tag}__{label}"] = averages[tag]
+    temporal = pd.DataFrame(extras, index=merged.index, dtype="float32")
+    return pd.concat([merged, temporal], axis=1)
 
 
 def build_training_table(

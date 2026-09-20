@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from neftekod_mas.data.regime import regime_at
 from neftekod_mas.schemas import (
     DataQualityFlag,
     DataQualityReport,
@@ -181,7 +182,24 @@ def build_process_state(
 
     lab_points: dict[str, LabPointReading] = {**lims_readings, **pak_readings}
 
+    # Переходный режим реактора (пуск/останов/разгон) -- вне области
+    # применимости soft-sensor'ов и оптимизации (data/regime.py); флаг
+    # блокирующий, Оркестратор по нему отказывается от рекомендации.
+    regime = regime_at(ht_kip, decision_at, tolerance=pd.Timedelta(kip_tolerance))
+    if regime.steady is False:
+        flags.append(
+            DataQualityFlag(
+                code="transient_regime",
+                tag_or_point=qualify("242000", "T11"),
+                detail="Реактор не в стационарном режиме: " + regime.detail,
+                severity=RiskClass.HIGH,
+            )
+        )
+
     sync_ok = not any(f.code == "missing_kip_snapshot" for f in flags)
 
     report = DataQualityReport(decision_at=decision_at, flags=flags, sync_ok=sync_ok)
-    return ProcessState(decision_at=decision_at, kip=kip, lab_points=lab_points, quality_report=report)
+    return ProcessState(
+        decision_at=decision_at, kip=kip, lab_points=lab_points, quality_report=report,
+        steady_regime=regime.steady,
+    )

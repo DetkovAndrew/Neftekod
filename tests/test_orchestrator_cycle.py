@@ -74,7 +74,7 @@ def _make_orchestrator():
     qa = QualityAgent(HARD_CONSTRAINTS)
     ra = ReliabilityAgent(RELIABILITY_BOUNDS)
     oa = OptimizationAgent(CONTROL_VARIABLES, CONTROL_BOUNDS, HARD_CONSTRAINTS, OBJECTIVE_WEIGHTS, qa, ra)
-    guard = Guard(graph, CONTROL_VARIABLES, CONTROL_BOUNDS)
+    guard = Guard(graph, CONTROL_VARIABLES, CONTROL_BOUNDS, hard_constraints=HARD_CONSTRAINTS)
     return Orchestrator(qa, ra, oa, guard)
 
 
@@ -101,7 +101,7 @@ def test_stable_period_no_action():
     assert "нарушений не обнаружено" in rec.explanation or "не создаёт" in rec.explanation or "не требуется" in rec.explanation
 
 
-def test_quality_risk_with_incomplete_prediction_refuses():
+def test_quality_risk_period_produces_full_recommendation():
     start = datetime(2023, 1, 1, 0, 0)
     n = 10
     avt = _kip_df(start, n, {})
@@ -119,8 +119,15 @@ def test_quality_risk_with_incomplete_prediction_refuses():
     orch = _make_orchestrator()
     rec = orch.run_cycle(decision_at, avt, ht, lims, pak)
 
-    assert rec.is_refusal is True
-    assert rec.proposed_actions == []
+    assert rec.is_refusal is False
+    assert len(rec.proposed_actions) >= 1
+    assert rec.proposed_actions[0].tag == "242000:T5"
+    assert "сера" in rec.problem_or_risk
+    assert any("ЛИТЕРАТУРНЫЙ" in w or "литератур" in w.lower() for w in rec.confidence_warnings)
+    # Альтернативы тоже обязаны прогнозировать нарушенный показатель --
+    # "дешёвый" сдвиг несвязанного тега решением не является.
+    for alt in rec.alternatives:
+        assert "sulfur_mg_kg" in {e.metric for e in alt.predicted_quality}
 
 
 def test_stale_data_period_refuses():
@@ -139,3 +146,180 @@ def test_stale_data_period_refuses():
     assert rec.is_refusal is True
     assert rec.confidence.value == "refuse"
     assert "Надёжной рекомендации нет" in rec.explanation
+
+
+def _risk_inputs():
+    start = datetime(2023, 1, 1, 0, 0)
+    n = 10
+    avt = _kip_df(start, n, {})
+    ht = _kip_df(start, n, {"T5": [365.0] * n, "T6": [363.0] * n, "T11": [364.0] * n, "P8": [0.17] * n, "W7": [0.17] * n})
+    decision_at = start + timedelta(minutes=30)
+    lims = pd.DataFrame({
+        "point_label": [GODT_POINT2] * 4,
+        "param": ["Mg.Sulfur", "95%.T", "CetaneNumber", "CFPP"],
+        "unit": ["мг/кг", "°C", "ед.цет.ч.", "°C"],
+        "measured_at": [decision_at - timedelta(hours=1)] * 4,
+        "value": [9.5, 340.0, 55.0, -10.0],
+    })
+    pak = _empty_df(["param", "unit", "measured_at", "value"])
+    return decision_at, avt, ht, lims, pak
+
+
+def test_transient_regime_refuses():
+    start = datetime(2023, 1, 1, 0, 0)
+    n = 18
+    avt = _kip_df(start, n, {})
+    # разгон реактора: T11 растёт с 300 до ~385°C за 3 ч
+    ramp = [300.0 + 5.0 * i for i in range(n)]
+    ht = _kip_df(start, n, {"T5": ramp, "T6": ramp, "T11": ramp, "P8": [0.17] * n, "W7": [0.17] * n})
+    decision_at = start + timedelta(minutes=10 * (n - 1))
+    lims = pd.DataFrame({
+        "point_label": [GODT_POINT2] * 4,
+        "param": ["Mg.Sulfur", "95%.T", "CetaneNumber", "CFPP"],
+        "unit": ["мг/кг", "°C", "ед.цет.ч.", "°C"],
+        "measured_at": [decision_at - timedelta(hours=1)] * 4,
+        "value": [9.5, 340.0, 55.0, -10.0],
+    })
+    pak = _empty_df(["param", "unit", "measured_at", "value"])
+
+    rec = _make_orchestrator().run_cycle(decision_at, avt, ht, lims, pak)
+
+    assert rec.is_refusal is True
+    assert "переходном режиме" in rec.problem_or_risk
+    assert any(w.startswith("transient_regime") for w in rec.confidence_warnings)
+
+
+def test_trace_records_agent_exchange_in_order():
+    rec = _make_orchestrator().run_cycle(*_risk_inputs())
+    senders = [m.sender for m in rec.trace]
+    assert senders[0] == "data_sync"
+    for agent in ("quality", "reliability", "optimization", "guard"):
+        assert agent in senders
+    assert rec.trace[-1].recipient == "operator"
+    assert [m.seq for m in rec.trace] == list(range(1, len(rec.trace) + 1))
+
+
+class _FakeMonitorClient:
+    def __init__(self, text=None, exc=None):
+        self.text, self.exc, self.calls = text, exc, 0
+
+    def __call__(self, system, user):
+        self.calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return self.text
+
+
+def _with_monitor(client):
+    from neftekod_mas.orchestrator.llm_monitor import LLMMonitor
+    orch = _make_orchestrator()
+    orch.llm_monitor = LLMMonitor(client)
+    return orch
+
+
+def test_llm_monitor_never_changes_decision():
+    baseline = _make_orchestrator().run_cycle(*_risk_inputs())
+    rec = _with_monitor(_FakeMonitorClient(
+        "Сера близка к пределу по ЛИМС, поэтому система предлагает изменить температуру "
+        "на входе в реактор; прогноз серы основан на литературной модели и требует проверки технологом."
+    )).run_cycle(*_risk_inputs())
+    assert rec.llm_status == "ok"
+    assert rec.llm_commentary
+    assert rec.proposed_actions == baseline.proposed_actions
+    assert rec.expected_effect == baseline.expected_effect
+    assert rec.constraints_checked == baseline.constraints_checked
+    assert rec.trace[-1].sender == "llm_monitor"
+
+
+def test_llm_monitor_rejects_hallucinated_numbers_and_tags():
+    client = _FakeMonitorClient(
+        "Рекомендуется поднять 242000:T77 до 412.5 °C, это гарантированно снизит серу "
+        "и не повлияет на остальные показатели качества продукта."
+    )
+    rec = _with_monitor(client).run_cycle(*_risk_inputs())
+    assert rec.llm_commentary is None
+    assert rec.llm_status.startswith("rejected")
+    assert "412.5" in rec.llm_status and "T77" in rec.llm_status
+    assert client.calls == 2  # одна повторная попытка
+    assert rec.is_refusal is False and rec.proposed_actions
+
+
+def test_llm_monitor_unavailable_does_not_break_cycle():
+    rec = _with_monitor(_FakeMonitorClient(exc=TimeoutError("timed out"))).run_cycle(*_risk_inputs())
+    assert rec.llm_commentary is None
+    assert rec.llm_status.startswith("unavailable")
+    assert rec.proposed_actions
+
+
+def test_candidate_without_effect_on_violated_metric_is_not_an_alternative():
+    """Сдвиг тега без расчётной связи с серой -- не решение нарушения по сере:
+    он не должен попадать ни в рекомендацию, ни в альтернативы Парето-фронта."""
+    control_variables = {"installations": {"hydrotreating_242000": {"variables": [
+        {"name": "ht_inlet_temp_c", "tag": "T5", "unit": "°C", "confidence": "assumption"},
+        {"name": "unrelated_valve", "tag": "W7", "unit": "%", "confidence": "assumption"},
+    ]}}}
+    bounds = CONTROL_BOUNDS | {"242000:W7": {"p05": 0.1, "p50": 0.17, "p95": 0.3}}
+    qa = QualityAgent(HARD_CONSTRAINTS)
+    ra = ReliabilityAgent(RELIABILITY_BOUNDS)
+    oa = OptimizationAgent(control_variables, bounds, HARD_CONSTRAINTS, OBJECTIVE_WEIGHTS, qa, ra)
+
+    start = datetime(2023, 1, 1, 0, 0)
+    n = 10
+    ht = _kip_df(start, n, {"T5": [365.0] * n, "T6": [363.0] * n, "T11": [364.0] * n, "P8": [0.17] * n, "W7": [0.17] * n})
+    decision_at = start + timedelta(minutes=30)
+    lims = pd.DataFrame({
+        "point_label": [GODT_POINT2] * 4,
+        "param": ["Mg.Sulfur", "95%.T", "CetaneNumber", "CFPP"],
+        "unit": ["мг/кг", "°C", "ед.цет.ч.", "°C"],
+        "measured_at": [decision_at - timedelta(hours=1)] * 4,
+        "value": [9.5, 340.0, 55.0, -10.0],
+    })
+    from neftekod_mas.data.sync import build_process_state
+    state = build_process_state(decision_at, _kip_df(start, n, {}), ht, lims, _empty_df(["param", "unit", "measured_at", "value"]))
+    quality = qa.assess(state)
+    risk = ra.assess(state)
+    result = oa.run(state, {v.metric: v.margin for v in quality.violations}, risk, quality, {"sulfur_mg_kg"})
+
+    assert result.feasible_candidates
+    assert all(a.tag == "242000:T5" for c in result.feasible_candidates for a in c.actions)
+    assert set(result.pareto_front_ids) <= {c.candidate_id for c in result.feasible_candidates}
+
+
+def test_candidate_that_leaves_violated_metric_unchanged_is_not_a_solution():
+    """T95 у порога действия, но формула T95 не содержит ни одного рычага --
+    у всех кандидатов "прогноз" T95 равен исходному. Рекомендовать сдвиг,
+    который T95 не меняет (раньше выигрывал за счёт бонуса выпуска), нельзя:
+    честный ответ -- отказ с объяснением, что рычага нет."""
+    start = datetime(2023, 1, 1, 0, 0)
+    n = 10
+    ht = _kip_df(start, n, {
+        "T5": [365.0] * n, "T6": [363.0] * n, "T11": [364.0] * n, "P8": [0.17] * n, "W7": [0.17] * n,
+        "F9": [100.0] * n, "F2": [1000.0] * n,
+    })
+    decision_at = start + timedelta(minutes=30)
+    lims = pd.DataFrame({
+        "point_label": [GODT_POINT2] * 4,
+        "param": ["Mg.Sulfur", "95%.T", "CetaneNumber", "CFPP"],
+        "unit": ["мг/кг", "°C", "ед.цет.ч.", "°C"],
+        "measured_at": [decision_at - timedelta(hours=1)] * 4,
+        "value": [3.0, 358.0, 55.0, -10.0],  # T95 в 2 °C от норматива -> HIGH
+    })
+    rec = _make_orchestrator().run_cycle(decision_at, _kip_df(start, n, {}), ht, lims, _empty_df(["param", "unit", "measured_at", "value"]))
+
+    assert rec.proposed_actions == []
+    assert rec.is_refusal is True
+    assert "T95" in rec.problem_or_risk
+
+
+def test_lower_limit_violation_is_worded_as_below_norm():
+    from neftekod_mas.orchestrator.explain import describe_violation
+    from neftekod_mas.schemas import (
+        ConfidenceLevel, DataSource, QualityAssessment, QualityMetricEstimate, RiskClass, SpecViolationRisk,
+    )
+    est = QualityMetricEstimate(metric="cetane_number", value=50.0, unit="ед.цет.ч.", source=DataSource.LIMS,
+                                age_minutes=60, confidence=ConfidenceLevel.HIGH)
+    v = SpecViolationRisk(metric="cetane_number", limit=51.0, op=">=", margin=-1.0, risk_class=RiskClass.CRITICAL)
+    q = QualityAssessment(decision_at=datetime(2024, 1, 1), current=[est], violations=[v],
+                          overall_confidence=ConfidenceLevel.HIGH)
+    text = describe_violation(q, v)
+    assert "ниже норматива на 1" in text and "превыш" not in text

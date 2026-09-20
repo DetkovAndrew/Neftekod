@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,9 +24,13 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from neftekod_mas.ml.dataset import TARGET_METRICS, build_feature_frame, build_training_table
+from neftekod_mas.ml.dataset import TARGET_METRICS, build_feature_frame, build_training_table, TrainingTable
 from neftekod_mas.ml.split import SharedTimeSplit, chronological_split
 from neftekod_mas.schemas import ConfidenceLevel, DataSource, ProcessState, QualityMetricEstimate
+
+# eval_set -> eval_X/eval_y появился только в lightgbm 4.7; старый API оставлен ради
+# совместимости с окружением кластера, предупреждение о депрекации глушится точечно.
+warnings.filterwarnings("ignore", message="The argument 'eval_set' is deprecated")
 
 DEFAULT_LGB_PARAMS: dict = {
     "objective": "regression",
@@ -66,6 +71,55 @@ class MetricModel:
     test_rmse: float
     n_train: int
     n_test: int
+
+
+@dataclass
+class GBMExperimentResult:
+    """Fitted models and untouched-period metrics for one common time split."""
+
+    models: dict[str, lgb.LGBMRegressor]
+    report: dict[str, dict]
+
+
+def train_gbm_on_shared_split(
+    tables: dict[str, TrainingTable], split: SharedTimeSplit, lgb_params: dict | None = None,
+) -> GBMExperimentResult:
+    """Fit one GBM per metric using train only; validation chooses tree count.
+
+    The returned test metrics are reporting-only and do not influence fitting or
+    model selection.
+    """
+    params = {**DEFAULT_LGB_PARAMS, **(lgb_params or {})}
+    models, report = {}, {}
+    for metric, table in tables.items():
+        target = pd.to_numeric(table.target, errors="coerce")
+        valid = np.isfinite(target.to_numpy(dtype=float))
+        features, target = table.features.loc[valid], target.loc[valid]
+        masks = split.masks(TrainingTable(metric, features, target, table.target_age_minutes.loc[valid]))
+        if masks["train"].sum() < 2 or not masks["validation"].any() or not masks["test"].any():
+            raise ValueError(f"{metric}: insufficient observations for common train/validation/test split")
+        train_x = features.loc[masks["train"]].rename(columns=_sanitize_feature_name)
+        validation_x = features.loc[masks["validation"]].rename(columns=_sanitize_feature_name)
+        test_x = features.loc[masks["test"]].rename(columns=_sanitize_feature_name)
+        model = lgb.LGBMRegressor(**params)
+        model.fit(train_x, target.loc[masks["train"]],
+                  eval_set=[(validation_x, target.loc[masks["validation"]])], eval_metric="l1",
+                  callbacks=[lgb.early_stopping(30, verbose=False)])
+        validation_pred = model.predict(validation_x)
+        test_pred = model.predict(test_x)
+        validation_y, test_y = target.loc[masks["validation"]].to_numpy(), target.loc[masks["test"]].to_numpy()
+        median = float(np.median(target.loc[masks["train"]]))
+        report[metric] = {
+            "n_train": int(masks["train"].sum()), "n_validation": int(masks["validation"].sum()),
+            "n_test": int(masks["test"].sum()), "best_iteration": int(model.best_iteration_ or params["n_estimators"]),
+            "validation_mae": float(np.abs(validation_pred - validation_y).mean()),
+            "validation_baseline_mae": float(np.abs(validation_y - median).mean()),
+            "test_mae": float(np.abs(test_pred - test_y).mean()),
+            "test_rmse": float(np.sqrt(((test_pred - test_y) ** 2).mean())),
+            "baseline_median_mae": float(np.abs(test_y - median).mean()),
+        }
+        models[metric] = model
+    return GBMExperimentResult(models=models, report=report)
 
 
 @dataclass
@@ -152,36 +206,3 @@ def train_all_metrics(
             test_mae=mae, test_rmse=rmse, n_train=len(split.train.target), n_test=len(split.test.target),
         )
     return predictor
-
-
-@dataclass
-class GBMBenchmarkResult:
-    report: dict[str, dict]
-
-
-def train_gbm_on_shared_split(
-    tables: dict[str, "TrainingTable"], split: SharedTimeSplit, lgb_params: dict | None = None
-) -> GBMBenchmarkResult:
-    """Локальный benchmark: обучение только на train, выбор по validation."""
-    params = {**DEFAULT_LGB_PARAMS, **(lgb_params or {})}
-    report: dict[str, dict] = {}
-    for metric in tables:
-        train, validation, test = split.train[metric], split.validation[metric], split.test[metric]
-        if train.target.empty or validation.target.empty or test.target.empty:
-            report[metric] = {"n_train": len(train.target), "n_validation": len(validation.target), "n_test": len(test.target)}
-            continue
-        model = lgb.LGBMRegressor(**params)
-        model.fit(train.features.rename(columns=_sanitize_feature_name), train.target)
-
-        def mae(part):
-            prediction = model.predict(part.features.rename(columns=_sanitize_feature_name))
-            return float(np.abs(prediction - part.target.to_numpy()).mean())
-
-        median = float(train.target.median())
-        report[metric] = {
-            "n_train": len(train.target), "n_validation": len(validation.target), "n_test": len(test.target),
-            "validation_mae": mae(validation), "test_mae": mae(test),
-            "validation_baseline_mae": float(np.abs(validation.target.to_numpy() - median).mean()),
-            "baseline_median_mae": float(np.abs(test.target.to_numpy() - median).mean()),
-        }
-    return GBMBenchmarkResult(report=report)

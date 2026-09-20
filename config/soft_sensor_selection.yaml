@@ -1,0 +1,36 @@
+_meta:
+  source: scripts/benchmark_anchored.py
+  selection_rule: min mean MAE over forward-chaining validation blocks; test never
+    used for selection; simplest within 2% of best
+  scope: steady-state reactor only (ml/anchored.steady_state_mask); outside -> refuse
+  test_at: '2025-11-26 10:00:00'
+sulfur_mg_kg:
+  selected: anchor+bias_k10
+  cv_mean_mae: 1.18
+  test_mae_steady: 0.9781
+  median_baseline_test_mae: 1.5497
+  n_test_steady: 286
+t95_c:
+  selected: anchor+bias_k10
+  cv_mean_mae: 4.5351
+  test_mae_steady: 4.3614
+  median_baseline_test_mae: 5.3291
+  n_test_steady: 237
+cetane_number:
+  selected: last_lims
+  cv_mean_mae: 1.2317
+  test_mae_steady: 1.2571
+  median_baseline_test_mae: 2.0429
+  n_test_steady: 7
+cfpp_c:
+  selected: last_lims
+  cv_mean_mae: 1.1723
+  test_mae_steady: 1.413
+  median_baseline_test_mae: 1.4565
+  n_test_steady: 92
+density_kg_m3:
+  selected: anchor+bias_k5
+  cv_mean_mae: 1.1353
+  test_mae_steady: 1.4328
+  median_baseline_test_mae: 2.4465
+  n_test_steady: 144

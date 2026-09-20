@@ -11,11 +11,17 @@
     python scripts/compute_reliability_bounds.py    # один раз
     python scripts/compute_control_bounds.py        # один раз
     python scripts/run_demo_cycle.py --timestamp "2023-03-15 10:00:00"
+
+С LLM Monitor (OpenAI-совместимый сервер, напр. Ollama на кластере через
+ssh-туннель `ssh -N -L 11434:slurm-comp3:11434 hpc`):
+    python scripts/run_demo_cycle.py --timestamp "2025-12-01 10:00:00" \
+        --llm-url http://localhost:11434/v1 --llm-model qwen2.5:7b
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -27,8 +33,10 @@ from neftekod_mas.data.loaders import data_dir, load_kip, load_lims, load_pak  #
 from neftekod_mas.optimization.optimization_agent import OptimizationAgent  # noqa: E402
 from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker  # noqa: E402
 from neftekod_mas.orchestrator.guard import Guard  # noqa: E402
+from neftekod_mas.orchestrator.llm_monitor import LLMMonitor, OpenAICompatClient  # noqa: E402
 from neftekod_mas.orchestrator.orchestrator import Orchestrator  # noqa: E402
 from neftekod_mas.quality.quality_agent import QualityAgent  # noqa: E402
+from neftekod_mas.quality.soft_sensors import SoftSensorService  # noqa: E402
 from neftekod_mas.reliability.reliability_agent import ReliabilityAgent  # noqa: E402
 from neftekod_mas.tags.pid_graph import TagGraph  # noqa: E402
 from neftekod_mas.utils.logging_run import RunLogger  # noqa: E402
@@ -43,10 +51,15 @@ from neftekod_mas.utils.config import (  # noqa: E402
     load_vak_formula_accuracy,
     load_astm_accuracy,
     load_freshness,
+    load_soft_sensor_selection,
 )
 
 
-def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
+def build_orchestrator(
+    enable_run_logging: bool = True,
+    soft_sensors: SoftSensorService | None = None,
+    llm_monitor: LLMMonitor | None = None,
+) -> Orchestrator:
     hc = load_hard_constraints()
     cv = load_control_variables()
     cb = load_control_bounds()
@@ -64,6 +77,7 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
         usable_pak_minutes=freshness["pak"]["usable_minutes"],
         formula_accuracy=formula_accuracy,
         astm_accuracy=astm_accuracy,
+        soft_sensors=soft_sensors,
     )
     reliability_agent = ReliabilityAgent(rb)
     optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
@@ -80,9 +94,10 @@ def build_orchestrator(enable_run_logging: bool = True) -> Orchestrator:
     return Orchestrator(
         quality_agent, reliability_agent, optimization_agent, guard,
         kip_bounds=kip_bounds,
+        run_logger=run_logger,
+        llm_monitor=llm_monitor,
         stale_lims_minutes=freshness["lims"]["fresh_minutes"],
         stale_pak_minutes=freshness["pak"]["fresh_minutes"],
-        run_logger=run_logger,
     )
 
 
@@ -115,6 +130,10 @@ def print_recommendation_card(rec) -> None:
         print(f"    ! {w}")
     print("-" * 78)
     print(f"Объяснение: {rec.explanation}")
+    if rec.llm_status is not None:
+        print("-" * 78)
+        print(f"Комментарий LLM Monitor ({rec.llm_status}):")
+        print(f"    {rec.llm_commentary}" if rec.llm_commentary else "    (не показан)")
     if rec.alternatives:
         print("-" * 78)
         print(f"Альтернативы (Парето-фронт, {len(rec.alternatives)}):")
@@ -124,9 +143,25 @@ def print_recommendation_card(rec) -> None:
     print("=" * 78)
 
 
+def print_trace(rec) -> None:
+    print("Трасса обмена агентов:")
+    for m in rec.trace:
+        print(f"  {m.seq:2d}. {m.sender} -> {m.recipient} [{m.topic}] {m.summary}")
+
+
+def load_tag_descriptions() -> dict[str, str]:
+    """Смысл тегов из справочника КИП -- для фактов карточки LLM Monitor."""
+    nodes = json.loads((CONFIG_DIR / "tag_ontology.json").read_text(encoding="utf-8"))["nodes"]
+    return {k: v["description"] for k, v in nodes.items() if v.get("description")}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timestamp", required=True, help='напр. "2023-03-15 10:00:00"')
+    parser.add_argument("--no-soft-sensors", action="store_true", help="прежний приоритет ЛИМС -> ПАК -> формула")
+    parser.add_argument("--llm-url", default=None, help="OpenAI-совместимый endpoint, напр. http://localhost:11434/v1")
+    parser.add_argument("--llm-model", default="qwen2.5:7b")
+    parser.add_argument("--trace", action="store_true", help="напечатать трассу сообщений агентов")
     args = parser.parse_args()
 
     decision_at = datetime.fromisoformat(args.timestamp)
@@ -136,9 +171,18 @@ def main() -> None:
     lims = load_lims(data_dir() / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx")
     pak = load_pak(data_dir() / "Выгрузка ПАК 01.01.2023 - н.в_.xlsx")
 
-    orchestrator = build_orchestrator()
+    selection = {} if args.no_soft_sensors else load_soft_sensor_selection()
+    soft_sensors = SoftSensorService.from_history(selection, avt, ht, lims) if selection else None
+    monitor = (
+        LLMMonitor(OpenAICompatClient(args.llm_url, args.llm_model), tag_descriptions=load_tag_descriptions())
+        if args.llm_url else None
+    )
+
+    orchestrator = build_orchestrator(soft_sensors=soft_sensors, llm_monitor=monitor)
     rec = orchestrator.run_cycle(decision_at, avt, ht, lims, pak)
     print_recommendation_card(rec)
+    if args.trace:
+        print_trace(rec)
 
 
 if __name__ == "__main__":

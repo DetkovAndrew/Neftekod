@@ -17,6 +17,20 @@
 исключать данные пуска/останова/физически неправдоподобные значения
 перед статистическими оценками.
 
+Дополнительный фильтр по скорости изменения (rate-of-change) добавлен
+после находки на реальном событии 2024-04-23: разгон реактора Р-202
+после пуска (T11 202°C -> 341°C за 5 часов) целиком проходит порог
+T11>200°C уже на первой точке (202°C), то есть попадает в "рабочее"
+состояние, хотя катализатор явно ещё не в стационарном режиме -- в
+этот самый момент ЛИМС зафиксировал реальный выброс серы 2120 мг/кг
+(в 212 раз выше предела 10 мг/кг), см. ARCHITECTURE.md §13. Без
+дополнительного фильтра такие переходные периоды (небольшая, но не
+нулевая доля истории) искажают перцентили в сторону "разгон -- это
+нормально", что не позволяет отличить пуск от устойчивой высокой
+severity. Порог 2°C/10мин выбран консервативно (стационарный режим
+обычно меняется существенно медленнее) и является допущением, как и
+сам порог 200°C.
+
 Запуск:
     export NEFTEKOD_DATA_DIR=/home/acid/neftekod
     python scripts/compute_reliability_bounds.py
@@ -38,6 +52,7 @@ from neftekod_mas.data.loaders import data_dir, load_kip  # noqa: E402
 RELIABILITY_TAGS = ["P8", "T5", "T6", "T11", "W7"]
 RUNNING_STATE_TAG = "T11"
 RUNNING_STATE_MIN_C = 200.0
+MAX_RATE_OF_CHANGE_C_PER_10MIN = 2.0  # исключает переходные периоды пуска/останова внутри "рабочего" диапазона
 QUANTILES = [0.01, 0.05, 0.50, 0.90, 0.95, 0.99, 1.0]
 
 
@@ -47,7 +62,9 @@ def main() -> None:
         raise SystemExit(f"Не найден {src}. Установите NEFTEKOD_DATA_DIR.")
 
     ht = load_kip(src)
-    running = ht[RUNNING_STATE_TAG] > RUNNING_STATE_MIN_C
+    above_threshold = ht[RUNNING_STATE_TAG] > RUNNING_STATE_MIN_C
+    steady_state = ht[RUNNING_STATE_TAG].diff().abs() <= MAX_RATE_OF_CHANGE_C_PER_10MIN
+    running = above_threshold & steady_state
     ht_running = ht[running]
 
     bounds: dict[str, dict] = {
@@ -57,8 +74,11 @@ def main() -> None:
             "note": (
                 "Паспортных ограничений оборудования не передано (Q&A-сессия). "
                 "Перцентили посчитаны по истории с фильтром "
-                f"'{RUNNING_STATE_TAG} > {RUNNING_STATE_MIN_C}°C' (прокси 'установка в работе'), "
-                f"доля данных после фильтра: {running.mean():.3f}."
+                f"'{RUNNING_STATE_TAG} > {RUNNING_STATE_MIN_C}°C И |Δ{RUNNING_STATE_TAG}/10мин| <= "
+                f"{MAX_RATE_OF_CHANGE_C_PER_10MIN}°C' (прокси 'установка в стационарном рабочем режиме', "
+                "второе условие исключает переходные пуски -- см. docstring модуля про событие 2024-04-23), "
+                f"доля данных после фильтра порога: {above_threshold.mean():.3f}, "
+                f"после обоих фильтров: {running.mean():.3f}."
             ),
         }
     }

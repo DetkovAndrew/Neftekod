@@ -36,6 +36,7 @@ from neftekod_mas.schemas import (
     QualityMetricEstimate,
     RiskClass,
     TagReading,
+    metric_name,
 )
 
 # Теги, для которых включается литературный прокси серы (см.
@@ -44,7 +45,10 @@ from neftekod_mas.schemas import (
 # зависимость "температура реактора -> сера".
 SULFUR_TEMP_PROXY_TAGS = {"242000:T5", "242000:T11"}
 
-DELTA_STEPS = [-2, -1, 1, 2]  # шагов сетки в обе стороны от текущей точки
+DELTA_STEPS = [-2, -1, 1, 2]
+# Прирост запаса меньше этого (в единицах показателя) -- "не сдвигает"
+# (численный шум формулы, а не эффект).
+_MIN_GAIN = 1e-3  # шагов сетки в обе стороны от текущей точки
 
 _FLOW_UNITS = {"т/ч", "м³/ч", "м3/ч"}
 
@@ -129,21 +133,6 @@ class OptimizationAgent:
 
     # -- оценка кандидата ------------------------------------------------
 
-    def _check_quality_constraints(self, predicted_quality: list[QualityMetricEstimate]) -> str | None:
-        by_metric = {estimate.metric: estimate for estimate in predicted_quality}
-        for metric, cfg in self.hard_constraints.items():
-            if cfg.get("limit") is None:
-                continue
-            estimate = by_metric.get(metric)
-            if estimate is None:
-                return f"Для обязательного ограничения {metric} нет прогноза эффекта (UNKNOWN)."
-            error = estimate.typical_error or 0.0
-            conservative = estimate.value + error if cfg["op"] == "<=" else estimate.value - error
-            limit = float(cfg["limit"])
-            if not (conservative <= limit if cfg["op"] == "<=" else conservative >= limit):
-                return f"Консервативный прогноз {metric}={conservative:.3g} нарушает предел {cfg['op']}{limit}"
-        return None
-
     def _evaluate(
         self,
         candidate_id: str,
@@ -154,7 +143,7 @@ class OptimizationAgent:
         violated_metrics: set[str],
     ) -> ControlCandidate:
         modified_state = self._apply_action(state, action.tag, action.recommended_value)
-        predicted_quality = self.quality_agent.predict_effect(modified_state)
+        predicted_quality = self.quality_agent.predict_effect(modified_state, state, quality_baseline)
 
         caveats: list[str] = []
 
@@ -194,35 +183,96 @@ class OptimizationAgent:
                     source=DataSource.LITERATURE_PROXY, age_minutes=None, confidence=ConfidenceLevel.LOW,
                 )]
                 caveats.append(
-                    f"Оценка серы -- ЛИТЕРАТУРНЫЙ прокси ({model_note}), НЕ подтверждён экспертом "
+                    f"Прогноз эффекта на серу -- ЛИТЕРАТУРНЫЙ прокси ({model_note}), НЕ подтверждён экспертом "
                     "завода и НЕ является производственной ВАК-формулой. Требует проверки "
                     "технологом перед применением."
                 )
 
-        predicted_risk = self.reliability_agent.assess(modified_state)
-
-        predictable_metrics = {e.metric for e in predicted_quality}
-        # Честно: какие из РЕАЛЬНО НАРУШЕННЫХ сейчас показателей этот
-        # кандидат вообще не в состоянии спрогнозировать -- раньше это
-        # проверялось только для тегов 24-2000, из-за чего кандидаты по
-        # АВТ-тегам молча выглядели так, будто "решают" проблему серы,
-        # хотя вообще её не затрагивают.
-        unaddressed = violated_metrics - predictable_metrics
-        if unaddressed:
+        # Для показателей без расчётной связи с данным рычагом сохраняем
+        # текущую лучшую оценку и прикладываем как минимум эталонную ошибку
+        # из hard_constraints. Это явное предположение локальной неизменности
+        # на малом шаге, которое затем независимо проверяет Guard. Кандидат без
+        # оценки обязательного показателя публиковать нельзя.
+        predicted_metrics = {estimate.metric for estimate in predicted_quality}
+        baseline_by_metric = {estimate.metric: estimate for estimate in quality_baseline.current}
+        for metric, cfg in self.hard_constraints.items():
+            if cfg.get("limit") is None or metric in predicted_metrics:
+                continue
+            baseline = baseline_by_metric.get(metric)
+            if baseline is None:
+                continue
+            predicted_quality.append(baseline.model_copy(update={
+                "confidence": ConfidenceLevel.LOW,
+                "typical_error": baseline.typical_error or float(cfg.get("reference_error", 0.0)),
+            }))
             caveats.append(
-                "ВНИМАНИЕ: этот кандидат НЕ прогнозирует эффект на " + ", ".join(sorted(unaddressed)) +
-                " -- у выбранного тега нет расчётной связи с этим показателем в имеющихся материалах. "
-                "Нарушение по нему могло остаться неисправленным."
+                f"Для {metric_name(metric)} нет модели отклика на {action.tag}; "
+                "применено консервативное предположение локальной неизменности."
             )
 
+        predicted_risk = self.reliability_agent.assess(modified_state)
+
+        # Кандидат -- решение нарушения, только если по прогнозу он СДВИГАЕТ
+        # нарушенный показатель к норме. "Прогноз есть, но равен исходному"
+        # (формула ВАК не содержит этого тега: T95 зависит от F9/F2/T6, ни один
+        # из которых не рычаг v1) -- не решение, хотя раньше проходил проверку
+        # "показатель прогнозируется" и выигрывал ранг за счёт бонуса выпуска.
+        # Ухудшать уже нарушенный показатель нельзя ни при каких условиях.
+        gains = self._margin_gains(predicted_quality, quality_baseline, violated_metrics)
+        improved = sorted(m for m, g in gains.items() if g > _MIN_GAIN)
+        worsened = sorted(m for m, g in gains.items() if g < -_MIN_GAIN)
+        unaddressed = sorted(violated_metrics - set(improved))
+
         feasible = True
-        rejection_reason = self._check_quality_constraints(predicted_quality)
-        if rejection_reason:
+        rejection_reason = None
+        required_metrics = {
+            metric for metric, cfg in self.hard_constraints.items()
+            if cfg.get("limit") is not None
+        }
+        predicted_metrics = {estimate.metric for estimate in predicted_quality}
+        missing_required = sorted(required_metrics - predicted_metrics)
+        if missing_required:
             feasible = False
-        if feasible and predicted_risk.risk_class == RiskClass.UNKNOWN:
+            rejection_reason = (
+                "Нет прогноза обязательных показателей: "
+                + ", ".join(map(metric_name, missing_required))
+            )
+        elif predicted_risk.risk_class == RiskClass.UNKNOWN:
             feasible = False
             rejection_reason = "Недостаточно признаков для оценки риска оборудования (UNKNOWN)."
-        elif feasible and predicted_risk.hard_stop:
+        elif violated_metrics and not improved:
+            feasible = False
+            rejection_reason = (
+                "Не сдвигает к норме нарушенный показатель " + ", ".join(map(metric_name, sorted(violated_metrics)))
+                + " -- у тега нет расчётной связи с ним в имеющихся моделях"
+            )
+        elif worsened:
+            feasible = False
+            rejection_reason = "Ухудшает уже нарушенный показатель " + ", ".join(map(metric_name, worsened))
+        elif unaddressed:
+            caveats.append(
+                "ВНИМАНИЕ: вариант не влияет на " + ", ".join(map(metric_name, unaddressed)) +
+                " -- этот риск останется, нужен отдельный рычаг."
+            )
+
+        for est in predicted_quality if feasible else []:
+            cfg = self.hard_constraints.get(est.metric)
+            if not cfg or cfg.get("limit") is None:
+                continue
+            op = cfg["op"]
+            limit = float(cfg["limit"])
+            error = est.typical_error or 0.0
+            conservative_value = est.value + error if op == "<=" else est.value - error
+            margin = (limit - conservative_value) if op == "<=" else (conservative_value - limit)
+            if margin < 0:
+                feasible = False
+                rejection_reason = (
+                    f"Консервативный прогноз {est.metric}={conservative_value:.3g} "
+                    f"(оценка {est.value:.3g}, ошибка {error:.3g}) нарушает жёсткий предел {op}{limit}"
+                )
+                break
+
+        if feasible and predicted_risk.hard_stop:
             if predicted_risk.severity_index > baseline_risk.severity_index:
                 feasible = False
                 rejection_reason = (
@@ -248,6 +298,7 @@ class OptimizationAgent:
         candidate: ControlCandidate,
         baseline_quality_margins: dict[str, float],
         violated_metrics: set[str],
+        quality_baseline: QualityAssessment,
     ) -> float:
         # Улучшение маржи нормируется на масштаб предела (safe % от limit),
         # иначе разница в °C (T95) и в мг/кг (сера) складывались бы напрямую
@@ -265,12 +316,10 @@ class OptimizationAgent:
             new_margin = (limit - est.value) if op == "<=" else (est.value - limit)
             margin_improve += (new_margin - base) / max(abs(limit), 1e-6)
 
-        # Кандидат, который вообще не прогнозирует эффект на реально
-        # нарушенный показатель, штрафуется отдельно и сильно -- иначе он
-        # может обойти по рангу кандидата, честно пытающегося решить
-        # именно заявленную проблему (см. docstring _evaluate).
-        predictable_metrics = {e.metric for e in candidate.predicted_quality}
-        unaddressed_penalty = 1.0 * len(violated_metrics - predictable_metrics)
+        # Частичное решение (сдвигает к норме не все нарушенные показатели)
+        # штрафуется за каждый оставшийся без рычага показатель.
+        gains = self._margin_gains(candidate.predicted_quality, quality_baseline, violated_metrics)
+        unaddressed_penalty = 1.0 * sum(1 for m in violated_metrics if gains.get(m, 0.0) <= _MIN_GAIN)
 
         # energy_cost_proxy и throughput_proxy -- в СЫРЫХ единицах самой
         # переменной (°C, МПа, т/ч вперемешку). Нормируем на масштаб
@@ -335,7 +384,8 @@ class OptimizationAgent:
         # (ТЗ: "при отсутствии допустимого варианта система должна
         # сообщить об этом").
         if violated_metrics and not any(
-            violated_metrics & {e.metric for e in c.predicted_quality} for c in candidates
+            any(g > _MIN_GAIN for g in self._margin_gains(c.predicted_quality, quality_baseline, violated_metrics).values())
+            for c in candidates
         ):
             return OptimizationResult(
                 decision_at=state.decision_at,
@@ -343,16 +393,17 @@ class OptimizationAgent:
                 feasible_candidates=[],
                 no_feasible_solution=True,
                 no_feasible_reason=(
-                    "Ни один из кандидатных управляющих тегов не имеет расчётной "
-                    "(ВАК-формула/литературный прокси) связи с нарушенным показателем "
-                    f"{', '.join(sorted(violated_metrics))} -- количественно обоснованную "
-                    "рекомендацию сформировать нечем."
+                    f"Ни один из {len(candidates)} вариантов по кандидатным рычагам не увеличивает "
+                    f"запас до норматива по показателю {', '.join(map(metric_name, sorted(violated_metrics)))}: "
+                    + self._why_no_lever(candidates, state, quality_baseline, violated_metrics)
+                    + " Количественно обоснованную рекомендацию сформировать нечем -- нужны решение "
+                    "технолога и свежий анализ ЛИМС."
                 ),
             )
 
         feasible = [c for c in candidates if c.feasible]
         for c in feasible:
-            c.score = self._score(c, baseline_quality_margins, violated_metrics)
+            c.score = self._score(c, baseline_quality_margins, violated_metrics, quality_baseline)
         feasible.sort(key=lambda c: c.score, reverse=True)
 
         if not feasible:
@@ -364,7 +415,8 @@ class OptimizationAgent:
                 no_feasible_reason=(
                     "Ни один из "
                     f"{len(candidates)} рассмотренных вариантов не проходит жёсткие "
-                    "ограничения или не улучшает уже критичный режим надёжности."
+                    "ограничения, не устраняет нарушенный показатель или не улучшает "
+                    "уже критичный режим надёжности." + self._best_attempts(candidates, violated_metrics)
                 ),
             )
 
@@ -377,6 +429,78 @@ class OptimizationAgent:
             pareto_front_ids=pareto_ids,
             recommended_candidate_id=feasible[0].candidate_id,
         )
+
+
+    def _margin_gains(
+        self,
+        predicted_quality: list[QualityMetricEstimate],
+        quality_baseline: QualityAssessment,
+        metrics: set[str],
+    ) -> dict[str, float]:
+        """Прирост запаса до норматива (в единицах показателя) по каждому из
+        metrics; показатель без прогноза в словарь не попадает."""
+        base = {e.metric: e.value for e in quality_baseline.current}
+        gains = {}
+        for e in predicted_quality:
+            if e.metric not in metrics or e.metric not in base:
+                continue
+            cfg = self.hard_constraints.get(e.metric) or {}
+            sign = -1.0 if cfg.get("op", "<=") == "<=" else 1.0
+            gains[e.metric] = sign * (e.value - base[e.metric])
+        return gains
+
+    def _why_no_lever(self, candidates, state, quality_baseline, violated_metrics) -> str:
+        """Различает "рычага нет вообще" и "рычаг есть, но упёрся в границу
+        модельного диапазона" -- для оператора это разные ситуации."""
+        bits = []
+        for metric in sorted(violated_metrics):
+            moving = [
+                c for c in candidates
+                if abs(self._margin_gains(c.predicted_quality, quality_baseline, {metric}).get(metric, 0.0)) > _MIN_GAIN
+            ]
+            if not moving:
+                bits.append(
+                    f"{metric_name(metric)} -- в имеющихся расчётных моделях (ВАК-формулы, ASTM D976, "
+                    "литературный прокси серы) у рычагов нет связи с этим показателем"
+                )
+                continue
+            for tag in dict.fromkeys(c.actions[0].tag for c in moving):
+                reading, b = state.kip.get(tag), self.bounds.get(tag)
+                var = next(c.actions[0] for c in moving if c.actions[0].tag == tag)
+                if reading is not None and b is not None and not (b["p05"] < reading.value < b["p95"]):
+                    bits.append(
+                        f"{metric_name(metric)} -- {var.variable_name} ({tag}) = {reading.value:.4g} {var.unit} "
+                        f"уже на границе модельного диапазона [{b['p05']:.4g}; {b['p95']:.4g}], "
+                        "сдвиг в нужную сторону не допускается"
+                    )
+                else:
+                    bits.append(f"{metric_name(metric)} -- все расчётные шаги {var.variable_name} ({tag}) ухудшают показатель")
+        return "; ".join(bits) + "."
+
+    def _best_attempts(self, candidates: list[ControlCandidate], violated_metrics: set[str]) -> str:
+        """Для отказа: лучший достижимый прогноз по каждому нарушенному показателю --
+        оператор видит, насколько не хватает рычагов, а не только сам факт отказа."""
+        bits = []
+        for metric in sorted(violated_metrics):
+            cfg = self.hard_constraints.get(metric) or {}
+            if cfg.get("limit") is None:
+                continue
+            sign = 1.0 if cfg["op"] == "<=" else -1.0
+            tries = [
+                (e.value, c) for c in candidates for e in c.predicted_quality if e.metric == metric
+            ]
+            if not tries:
+                continue
+            value, c = min(tries, key=lambda t: sign * t[0])
+            a = c.actions[0]
+            bits.append(
+                f"лучший вариант по показателю «{metric_name(metric)}» -- {a.variable_name} ({a.tag}) до "
+                f"{a.recommended_value:.4g} {a.unit}: прогноз {value:.4g} при нормативе "
+                f"{cfg['op']} {float(cfg['limit']):.4g}"
+                + (f" ({c.rejection_reason})" if c.rejection_reason and metric not in c.rejection_reason else "")
+            )
+        text = "; ".join(bits)
+        return (" " + text[0].upper() + text[1:] + ".") if bits else ""
 
 
 def _pareto_front(candidates: list[ControlCandidate]) -> list[str]:

@@ -33,17 +33,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from run_demo_cycle import build_orchestrator  # noqa: E402
 from neftekod_mas.data.loaders import data_dir, load_kip, load_lims, load_pak  # noqa: E402
+from neftekod_mas.quality.soft_sensors import SoftSensorService  # noqa: E402
+from neftekod_mas.utils.config import load_soft_sensor_selection  # noqa: E402
 
 
-def scan(start: datetime, end: datetime, step: timedelta) -> list[dict]:
-    # per-cycle артефакты (runs/<timestamp>/*.json) отключены при массовом
-    # прогоне -- иначе сотни точек сканирования оставили бы тысячи файлов
-    # на диске; для точечного разбора конкретного момента см. run_demo_cycle.py
-    orchestrator = build_orchestrator(enable_run_logging=False)
+def scan(start: datetime, end: datetime, step: timedelta, use_soft_sensors: bool = True) -> list[dict]:
     avt = load_kip(data_dir() / "avt_tags.csv")
     ht = load_kip(data_dir() / "242000_tags.csv")
     lims = load_lims(data_dir() / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx")
     pak = load_pak(data_dir() / "Выгрузка ПАК 01.01.2023 - н.в_.xlsx")
+    selection = load_soft_sensor_selection() if use_soft_sensors else {}
+    soft_sensors = SoftSensorService.from_history(selection, avt, ht, lims) if selection else None
+    # per-cycle артефакты (runs/<timestamp>/*.json) отключены при массовом
+    # прогоне -- иначе сотни точек сканирования оставили бы тысячи файлов
+    # на диске; для точечного разбора конкретного момента см. run_demo_cycle.py
+    orchestrator = build_orchestrator(enable_run_logging=False, soft_sensors=soft_sensors)
 
     rows: list[dict] = []
     ts = start
@@ -57,6 +61,8 @@ def scan(start: datetime, end: datetime, step: timedelta) -> list[dict]:
             "problem": rec.problem_or_risk,
             "key_state": rec.key_state,
             "n_warnings": len(rec.confidence_warnings),
+            "transient": any(w.startswith("transient_regime") for w in rec.confidence_warnings),
+            "stopped_at": rec.trace[-1].sender if rec.trace else None,
         })
         ts += step
     return rows
@@ -156,13 +162,14 @@ def main() -> None:
     parser.add_argument("--end", required=True)
     parser.add_argument("--step-hours", type=float, default=12.0)
     parser.add_argument("--out-dir", default=str(REPO_ROOT / "runs"))
+    parser.add_argument("--no-soft-sensors", action="store_true")
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start)
     end = datetime.fromisoformat(args.end)
     step = timedelta(hours=args.step_hours)
 
-    rows = scan(start, end, step)
+    rows = scan(start, end, step, use_soft_sensors=not args.no_soft_sensors)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -177,7 +184,9 @@ def main() -> None:
     n_no_action = sum(1 for r in rows if r["decision"] == "no_action")
     n_recommend = sum(1 for r in rows if r["decision"] == "recommend")
     n_refuse = sum(1 for r in rows if r["decision"] == "refuse")
-    print(f"Прогнано {len(rows)} точек: no_action={n_no_action}, recommend={n_recommend}, refuse={n_refuse}")
+    n_transient = sum(1 for r in rows if r["transient"])
+    print(f"Прогнано {len(rows)} точек: no_action={n_no_action}, recommend={n_recommend}, "
+          f"refuse={n_refuse} (из них переходный режим: {n_transient})")
     print(f"Дашборд -> {html_path} (открыть в браузере)")
 
 

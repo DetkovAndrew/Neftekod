@@ -54,7 +54,17 @@ def load_astm_accuracy() -> dict:
 
 
 def load_freshness() -> dict:
+    """Допустимый возраст источников для синхронизации и оценки качества."""
     with open(CONFIG_DIR / "freshness.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_soft_sensor_selection() -> dict:
+    """Итог scripts/benchmark_anchored.py; пусто -- soft-sensor'ы выключены."""
+    path = CONFIG_DIR / "soft_sensor_selection.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 

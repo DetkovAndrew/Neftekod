@@ -14,7 +14,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from neftekod_mas.ml.baseline_gbm import train_all_metrics
+from neftekod_mas.ml.baseline_gbm import train_all_metrics, train_gbm_on_shared_split
+from neftekod_mas.ml.dataset import build_feature_frame, build_training_table, TARGET_METRICS
+from neftekod_mas.ml.split import shared_time_split
 from neftekod_mas.quality.quality_agent import GODT_POINT2
 from neftekod_mas.schemas import DataSource, ProcessState, TagReading
 
@@ -90,3 +92,19 @@ def test_train_predict_save_load_roundtrip_all_metrics(tmp_path):
     reloaded = predictor.__class__.load(save_dir)
     reloaded_predictions = reloaded.predict(state)
     assert {p.metric: round(p.value, 4) for p in predictions} == {p.metric: round(p.value, 4) for p in reloaded_predictions}
+
+
+def test_gbm_shared_time_split_keeps_test_out_of_model_selection():
+    avt = _synthetic_kip(800, 4)
+    ht = _synthetic_kip(800, 5)
+    frames = []
+    for number, (param, base) in enumerate([("Mg.Sulfur", 7.), ("95%.T", 345.), ("CetaneNumber", 53.), ("CFPP", -10.), ("D15", 835.)]):
+        times = avt.index[30 + number::18][:40]
+        frames.append(pd.DataFrame({"point_label": GODT_POINT2, "param": param, "unit": "u",
+                                    "measured_at": times, "value": base + np.arange(len(times)) * .01}))
+    lims = pd.concat(frames, ignore_index=True)
+    features = build_feature_frame(avt, ht)
+    tables = {m: build_training_table(m, lims, features) for m in TARGET_METRICS}
+    result = train_gbm_on_shared_split(tables, shared_time_split(tables), {"n_estimators": 20})
+    assert set(result.models) == set(TARGET_METRICS)
+    assert all(rep["n_train"] and rep["n_validation"] and rep["n_test"] for rep in result.report.values())

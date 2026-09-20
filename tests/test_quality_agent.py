@@ -91,3 +91,36 @@ def test_violation_detection_sulfur_over_limit():
     v = next(v for v in qa.violations if v.metric == "sulfur_mg_kg")
     assert v.margin < 0
     assert v.risk_class.value == "critical"
+
+
+def test_alert_thresholds_in_units_shift_earlier_for_less_accurate_estimates():
+    from neftekod_mas.schemas import ConfidenceLevel, DataSource, QualityMetricEstimate, RiskClass
+
+    cfg = {"op": "<=", "limit": 10.0, "watch_at": 7.5, "act_at": 8.5, "reference_error": 1.18,
+           "risk_margin_high": 1.0, "risk_margin_medium": 2.5}
+    qa = QualityAgent({"product_diesel": {"sulfur_mg_kg": cfg}})
+
+    def check(value, err):
+        est = QualityMetricEstimate(metric="sulfur_mg_kg", value=value, unit="мг/кг", source=DataSource.SOFT_SENSOR,
+                                    confidence=ConfidenceLevel.HIGH, typical_error=err)
+        return qa._check_violations([est])[0]
+
+    assert check(7.0, 1.18).risk_class == RiskClass.LOW
+    assert check(8.0, 1.18).risk_class == RiskClass.MEDIUM  # под наблюдением
+    assert check(8.6, 1.18).risk_class == RiskClass.HIGH
+    assert check(10.2, 1.18).risk_class == RiskClass.CRITICAL
+    assert check(8.0, None).risk_class == RiskClass.MEDIUM  # свежий ЛИМС -- без сдвига
+    # оценка вдвое грубее -> пороги сдвинуты к норме на 1.18: действие уже с 7.32
+    worse = check(8.0, 2.36)
+    assert worse.risk_class == RiskClass.HIGH
+    assert abs(worse.act_at - 7.32) < 1e-9
+
+
+def test_alert_thresholds_for_lower_limit_metrics():
+    from neftekod_mas.quality.quality_agent import alert_thresholds
+
+    cetane = {"op": ">=", "limit": 51.0, "watch_at": 53.0, "act_at": 52.0, "reference_error": 1.23}
+    assert alert_thresholds(cetane, 1.23) == (52.0, 53.0)
+    act, watch = alert_thresholds(cetane, 2.23)
+    assert abs(act - 53.0) < 1e-9 and abs(watch - 54.0) < 1e-9
+    assert alert_thresholds({"op": "<=", "limit": 1.0}, 0.5) is None
