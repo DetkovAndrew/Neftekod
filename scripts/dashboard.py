@@ -294,9 +294,22 @@ function chart() {
   svg += overlay;
 
   const my = H - 14;
+  // Полоса исходов должна читаться и на 200 точках, и на 1300. Кружки с
+  // обводкой при высокой плотности сливаются в бледную линию, поэтому
+  // при нехватке места маркеры рисуются вплотную стоящими штрихами без
+  // обводки: цвет сохраняется, а полоса остаётся сплошной и читаемой.
+  const spacing = (W - padL - padR) / Math.max(rows.length - 1, 1);
+  const dense = spacing < 6;
   rows.forEach((r, i) => {
-    svg += `<circle data-i="${i}" cx="${x(r.ts).toFixed(1)}" cy="${my}" r="3.5"
-             fill="${statusVar(r.decision)}" stroke="var(--panel)" stroke-width="1"/>`;
+    const cx = x(r.ts);
+    if (dense) {
+      const w = Math.max(spacing * 0.9, 1.2);
+      svg += `<rect data-i="${i}" x="${(cx - w / 2).toFixed(2)}" y="${my - 6}" width="${w.toFixed(2)}"
+               height="12" fill="${statusVar(r.decision)}"/>`;
+    } else {
+      svg += `<circle data-i="${i}" cx="${cx.toFixed(1)}" cy="${my}" r="3.5"
+               fill="${statusVar(r.decision)}" stroke="var(--panel)" stroke-width="1"/>`;
+    }
   });
   svg += `<text x="4" y="${my + 4}" style="fill:var(--secondary)">исход</text>`;
   svg += `<text x="${padL}" y="${H - 1}">${new Date(t0).toLocaleDateString("ru")}</text>`;

@@ -73,7 +73,7 @@ def capture(dashboard: Path, out_dir: Path) -> list[Path]:
             raise SystemExit("Дашборд не прошёл проверку отрисовки:\n  " + "\n  ".join(errors))
 
         rows = page.eval_on_selector_all("#table tbody tr", "els => els.length")
-        markers = page.eval_on_selector_all("#chart svg circle", "els => els.length")
+        markers = page.eval_on_selector_all("#chart svg [data-i]", "els => els.length")
         print(f"Отрисовано: строк журнала {rows}, маркеров решений {markers}")
         if rows == 0 or markers == 0:
             browser.close()
