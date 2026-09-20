@@ -18,9 +18,14 @@ consolidated plan received via MQTT". Здесь роль "MQTT" играет т
                              явно обоснованные кандидаты-допущения)
   3. within_bounds        -- рекомендуемое значение в пределах
                              валидированного диапазона (control_bounds.yaml)
-  4. blend_sum_100        -- нет активных переменных блендинга в v1,
-                             проверка присутствует "на будущее" и сейчас
-                             всегда PASS
+  4. blend_sum_100        -- для кандидатов рычага блендинга сумма долей
+                             компонентов пересчитывается ЗАНОВО из
+                             рекомендуемых расходов и сверяется со 100 %
+                             (жёсткое требование ТЗ п.4). Guard не верит
+                             Агенту блендинга на слово: он не использует
+                             ни его объект, ни его расчёт -- только
+                             числа из самого кандидата. Если блендинг
+                             в кандидате не участвует -- NOT_APPLICABLE
   5. downstream_impact     -- информационная проверка через TagGraph BFS,
                              прикладывается к объяснению, не блокирует
   6. joint_envelope        -- (опционально, если передан JointEnvelopeChecker)
@@ -63,6 +68,74 @@ class Guard:
         self.bounds = {k: v for k, v in control_bounds.items() if k != "_meta"}
         self.hard_constraints = (hard_constraints or {}).get("product_diesel", {})
         self.joint_envelope = joint_envelope
+
+    # Допуск "= 100 %" из ТЗ: доли считаются из расходов в float, поэтому
+    # точное равенство недостижимо; 1e-6 п.п. -- это машинная точность,
+    # а не технологический допуск.
+    BLEND_SUM_TOLERANCE_PCT = 1e-6
+    # Перераспределение долей не должно менять суммарный расход пула
+    # больше чем на 0.1 % -- иначе это уже изменение загрузки, а не блендинг.
+    POOL_FLOW_TOLERANCE_FRAC = 1e-3
+
+    # Действия рычага блендинга именуются так в config/control_variables.yaml.
+    # Guard опознаёт их по имени переменной, а не по тегу: тег F30/F32 может
+    # участвовать и как одиночный рычаг расхода, где сумма долей ни при чём.
+    _BLEND_ACTION_PREFIX = "blend_share_"
+
+    def _check_blend_sum(self, candidate: ControlCandidate, state: ProcessState | None) -> GuardCheck:
+        """Независимая проверка Σ долей = 100 % (ТЗ п.4, жёсткое требование).
+
+        Пересчитывает доли из РЕКОМЕНДУЕМЫХ расходов самого кандидата.
+        Агенту блендинга здесь не доверяется ничего: его поле
+        `share_sum_pct` не читается, объект агента сюда не передаётся --
+        ровно та же изоляция, что у остальных проверок Guard
+        (ARCHITECTURE.md §6.5).
+        """
+        blend_actions = [
+            a for a in candidate.actions
+            if a.variable_name.startswith(self._BLEND_ACTION_PREFIX)
+        ]
+        if not blend_actions:
+            return GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.NOT_APPLICABLE,
+                              detail="Блендинг не участвует в кандидате")
+        if len(blend_actions) < 2:
+            return GuardCheck(
+                check_name="blend_sum_100", verdict=GuardVerdict.BLOCK,
+                detail="Доля компонента изменена в одиночку -- сумма долей не может остаться 100 %",
+            )
+
+        total_new = sum(a.recommended_value for a in blend_actions)
+        if total_new <= 0:
+            return GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.BLOCK,
+                              detail="Суммарный расход пула не положителен")
+
+        shares = [100.0 * a.recommended_value / total_new for a in blend_actions]
+        share_sum = sum(shares)
+        if any(s < 0.0 for s in shares):
+            return GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.BLOCK,
+                              detail="Отрицательная доля компонента")
+        if abs(share_sum - 100.0) > self.BLEND_SUM_TOLERANCE_PCT:
+            return GuardCheck(
+                check_name="blend_sum_100", verdict=GuardVerdict.BLOCK,
+                detail=f"Сумма долей {share_sum:.4f} % отличается от 100 % более чем на "
+                       f"{self.BLEND_SUM_TOLERANCE_PCT} п.п.",
+            )
+
+        total_old = sum(a.current_value for a in blend_actions)
+        drift = abs(total_new - total_old) / max(total_old, 1e-9)
+        if drift > self.POOL_FLOW_TOLERANCE_FRAC:
+            return GuardCheck(
+                check_name="blend_sum_100", verdict=GuardVerdict.BLOCK,
+                detail=f"Суммарный расход пула изменился на {100.0 * drift:.2f} % "
+                       f"({total_old:.2f} -> {total_new:.2f} т/ч) -- это уже не перераспределение долей",
+            )
+
+        detail = ", ".join(
+            f"{a.variable_name.removeprefix(self._BLEND_ACTION_PREFIX)}={s:.2f} %"
+            for a, s in zip(blend_actions, shares, strict=True)
+        )
+        return GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.PASS,
+                          detail=f"Σ долей = {share_sum:.2f} % ({detail}); суммарный расход пула сохранён")
 
     def review(
         self, candidate: ControlCandidate | None, decision_at: datetime, state: ProcessState | None = None
@@ -116,8 +189,7 @@ class Guard:
                     detail=f"Затронуто (грубая топология стадий): {len(downstream)} тегов ниже по потоку",
                 ))
 
-        checks.append(GuardCheck(check_name="blend_sum_100", verdict=GuardVerdict.NOT_APPLICABLE,
-            detail="Блендинг не участвует в кандидате"))
+        checks.append(self._check_blend_sum(candidate, state))
         by_metric = {estimate.metric: estimate for estimate in candidate.predicted_quality}
         for metric, cfg in self.hard_constraints.items():
             if cfg.get("limit") is None:

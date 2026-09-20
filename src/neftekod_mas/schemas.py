@@ -169,6 +169,44 @@ class EquipmentRiskAssessment(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Агент блендинга (ARCHITECTURE.md §6.6)
+# ---------------------------------------------------------------------------
+
+
+class BlendComponentState(BaseModel):
+    """Один компонент дизельного пула на момент решения."""
+
+    key: str
+    description: str
+    flow_tag: str
+    flow_t_h: float
+    mass_share_pct: float
+    volume_share_pct: float
+    density_kg_m3: float
+    sulfur_pct_mass: Optional[float] = None  # идентифицирована по истории, см. compute_blend_model.py
+
+
+class BlendAssessment(BaseModel):
+    """Состояние пула: компоненты, доли, качество смеси.
+
+    `share_sum_pct` -- та самая сумма долей из жёстких ограничений ТЗ п.4.
+    Она равна 100 по построению (доли считаются от суммарного расхода),
+    но выносится в контракт явно, чтобы Guard проверял её независимо,
+    а не доверял агенту на слово.
+    """
+
+    decision_at: datetime
+    components: list[BlendComponentState]
+    total_flow_t_h: float
+    share_sum_pct: float
+    blend_quality: dict[str, float] = Field(default_factory=dict)
+    supported_metrics: list[str] = Field(default_factory=list)
+    available: bool = True
+    unavailable_reason: Optional[str] = None
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+
+
+# ---------------------------------------------------------------------------
 # Агент оптимизации
 # ---------------------------------------------------------------------------
 
@@ -192,6 +230,11 @@ class ControlCandidate(BaseModel):
     rejection_reason: Optional[str] = None
     caveats: list[str] = Field(default_factory=list)
     score: Optional[float] = None
+    # Экономический эффект в РЕАЛЬНЫХ единицах (т/сут, Гкал/ч, кВт, нм3/ч)
+    # и в рублях по ценам-допущениям из config/economics.yaml.
+    # None -- Агент экономики не подключён или не смог посчитать
+    # (это "нечем измерить", а не "эффекта нет"), см. §6.7.
+    economics: Optional[dict] = None
 
 
 class OptimizationResult(BaseModel):
@@ -248,6 +291,11 @@ class Recommendation(BaseModel):
     confidence: ConfidenceLevel
     confidence_warnings: list[str]
     explanation: str
+    # Экономический эффект в реальных единицах и рублях (ARCHITECTURE.md §6.7).
+    # Отделён от expected_effect намеренно: там -- показатели качества и
+    # риска, здесь -- натуральные величины и деньги, часть которых опирается
+    # на цены-допущения. Оператор должен видеть эту границу.
+    economic_effect: Optional[dict] = None
     llm_commentary: Optional[str] = None  # см. §9 ARCHITECTURE.md: никогда не влияет на проверки
     is_refusal: bool = False
     alternatives: list[ControlCandidate] = Field(default_factory=list)  # Парето-фронт минус выбранный (ТЗ п.3: "альтернативы")

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from neftekod_mas.blending.blending_agent import BlendingAgent  # noqa: E402
+from neftekod_mas.economics.economics_agent import EconomicsAgent  # noqa: E402
 from neftekod_mas.data.loaders import data_dir, load_kip, load_lims, load_pak  # noqa: E402
 from neftekod_mas.optimization.optimization_agent import OptimizationAgent  # noqa: E402
 from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker  # noqa: E402
@@ -42,6 +45,8 @@ from neftekod_mas.tags.pid_graph import TagGraph  # noqa: E402
 from neftekod_mas.utils.logging_run import RunLogger  # noqa: E402
 from neftekod_mas.utils.config import (  # noqa: E402
     CONFIG_DIR,
+    load_blend_model,
+    load_economics,
     load_control_bounds,
     load_control_variables,
     load_hard_constraints,
@@ -80,7 +85,17 @@ def build_orchestrator(
         soft_sensors=soft_sensors,
     )
     reliability_agent = ReliabilityAgent(rb)
-    optimization_agent = OptimizationAgent(cv, cb, hc, ow, quality_agent, reliability_agent)
+    # Агент блендинга подключается, только если посчитана модель
+    # (config/blend_model.yaml). Без неё система работает как раньше --
+    # просто без рычага блендинга (ARCHITECTURE.md §6.6).
+    blend_model = {} if os.environ.get("NEFTEKOD_DISABLE_BLENDING") else load_blend_model()
+    blending_agent = BlendingAgent(blend_model) if blend_model.get("components") else None
+    economics_cfg = load_economics()
+    economics_agent = EconomicsAgent(economics_cfg) if economics_cfg else None
+    optimization_agent = OptimizationAgent(
+        cv, cb, hc, ow, quality_agent, reliability_agent,
+        blending_agent=blending_agent, economics_agent=economics_agent,
+    )
     joint_envelope_path = CONFIG_DIR / "joint_envelope.npz"
     joint_envelope = (
         JointEnvelopeChecker.from_npz(joint_envelope_path, cb) if joint_envelope_path.exists() else None
@@ -99,6 +114,13 @@ def build_orchestrator(
         stale_lims_minutes=freshness["lims"]["fresh_minutes"],
         stale_pak_minutes=freshness["pak"]["fresh_minutes"],
     )
+
+
+def _rub(value: float) -> str:
+    """Рубли с неразрывным разделением тысяч. Форматирование делается
+    только над самим числом -- подстановка пробелов во всю строку
+    портила запятые в поясняющем тексте."""
+    return f"{value:+,.0f}".replace(",", "\u00a0")
 
 
 def print_recommendation_card(rec) -> None:
@@ -120,6 +142,33 @@ def print_recommendation_card(rec) -> None:
     print("Ожидаемый эффект:")
     for k, v in rec.expected_effect.items():
         print(f"    {k}: {v:.4g}")
+
+    if rec.economic_effect:
+        print("-" * 78)
+        print("Экономический эффект (натуральные единицы -- измерены, рубли -- по ценам-допущениям):")
+        _ECON_RU = {
+            "product_rate_t_h": ("выпуск ДТ", "т/ч"),
+            "furnace_p3_duty_gcal_h": ("тепло печи П-3", "Гкал/ч"),
+            "ht_feed_heating_gcal_h": ("нагрев сырья гидроочистки", "Гкал/ч"),
+            "recycle_compressor_kw": ("мощность ЦК-201", "кВт"),
+            "makeup_hydrogen_nm3_h": ("свежий ВСГ", "нм3/ч"),
+        }
+        base = rec.economic_effect.get("baseline_physical") or {}
+        for key, value in base.items():
+            name, unit = _ECON_RU.get(key, (key, ""))
+            print(f"    сейчас: {name}: {value:g} {unit}")
+        for key, value in (rec.economic_effect.get("delta_physical") or {}).items():
+            name, unit = _ECON_RU.get(key, (key, ""))
+            print(f"    изменение: {name}: {value:+g} {unit}")
+        money = rec.economic_effect.get("delta_rub_per_day") or {}
+        for key, value in money.items():
+            print(f"    рубли/сут ({key}): {_rub(value)}")
+        net = rec.economic_effect.get("net_rub_per_day")
+        if net is not None:
+            print(f"    ИТОГО: {_rub(net)} руб/сут (цены -- допущение, config/economics.yaml)")
+        for note in rec.economic_effect.get("notes") or []:
+            print(f"    ! {note}")
+
     print("-" * 78)
     print("Проверка ограничений (Guard):")
     for c in rec.constraints_checked:

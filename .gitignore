@@ -36,3 +36,4 @@ venv/
 
 # Local env
 .env
+.venv-linux/

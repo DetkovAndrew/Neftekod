@@ -96,7 +96,15 @@ class OptimizationAgent:
         objective_weights: dict,
         quality_agent: QualityAgent,
         reliability_agent: ReliabilityAgent,
+        blending_agent=None,
+        economics_agent=None,
     ):
+        # Агент блендинга опционален: без config/blend_model.yaml система
+        # обязана работать ровно как раньше (ARCHITECTURE.md §6.6).
+        self.blending_agent = blending_agent
+        # Агент экономики тоже опционален: без config/economics.yaml
+        # ранжирование остаётся на прежних безразмерных прокси (§6.7).
+        self.economics_agent = economics_agent
         self.active_variables = _flatten_active_variables(control_variables_cfg)
         self.bounds = {k: v for k, v in control_bounds.items() if k != "_meta"}
         self.hard_constraints = hard_constraints.get("product_diesel", {})
@@ -121,14 +129,21 @@ class OptimizationAgent:
                 values.append(v)
         return values
 
-    def _apply_action(self, state: ProcessState, tag: str, new_value: float) -> ProcessState:
+    def _apply_actions(self, state: ProcessState, actions: list[ControlAction]) -> ProcessState:
+        """Кандидат может менять СРАЗУ НЕСКОЛЬКО тегов -- так устроен
+        рычаг блендинга: доли перераспределяются между компонентами пула
+        одновременно, при неизменном суммарном расходе (ARCHITECTURE.md
+        §6.6). Одиночное действие -- частный случай списка из одного."""
         new_state = copy.deepcopy(state)
-        old = new_state.kip.get(tag)
-        unit = old.unit if old else ""
-        new_state.kip[tag] = TagReading(
-            tag_id=tag, value=new_value, unit=unit, timestamp=state.decision_at,
-            source=old.source if old else state.kip[tag].source,
-        )
+        for action in actions:
+            tag = action.tag
+            old = new_state.kip.get(tag)
+            unit = old.unit if old else ""
+            new_state.kip[tag] = TagReading(
+                tag_id=tag, value=action.recommended_value, unit=unit,
+                timestamp=state.decision_at,
+                source=old.source if old else state.kip[tag].source,
+            )
         return new_state
 
     # -- оценка кандидата ------------------------------------------------
@@ -137,15 +152,39 @@ class OptimizationAgent:
         self,
         candidate_id: str,
         state: ProcessState,
-        action: ControlAction,
+        actions: list[ControlAction] | ControlAction,
         baseline_risk: EquipmentRiskAssessment,
         quality_baseline: QualityAssessment,
         violated_metrics: set[str],
+        external_quality_deltas: dict[str, float] | None = None,
+        external_caveats: list[str] | None = None,
+        throughput_proxy: float | None = None,
     ) -> ControlCandidate:
-        modified_state = self._apply_action(state, action.tag, action.recommended_value)
+        if isinstance(actions, ControlAction):
+            actions = [actions]
+        action = actions[0]  # ведущее действие: по нему нормируется ранг
+        modified_state = self._apply_actions(state, actions)
         predicted_quality = self.quality_agent.predict_effect(modified_state, state, quality_baseline)
 
-        caveats: list[str] = []
+        caveats: list[str] = list(external_caveats or [])
+
+        # Приращения, которые формульный слой 24-2000 увидеть не может:
+        # рычаг блендинга меняет теги АВТ (F30/F32), а ВАК-формулы
+        # продукта зависят только от тегов 24-2000. Эффект приходит
+        # от Агента блендинга уже как СДВИГ показателя продукта
+        # (delta-метод, см. blending_agent.predict_product_effect).
+        if external_quality_deltas:
+            by_metric = {e.metric: e for e in predicted_quality}
+            for metric, delta in external_quality_deltas.items():
+                est = by_metric.get(metric)
+                if est is None:
+                    est = next((e for e in quality_baseline.current if e.metric == metric), None)
+                    if est is None:
+                        continue
+                    est = est.model_copy(update={"confidence": ConfidenceLevel.LOW})
+                    predicted_quality.append(est)
+                    by_metric[metric] = est
+                est.value = est.value + float(delta)
 
         # Литературный прокси серы -- см. quality/literature_proxies.py.
         # Включается ТОЛЬКО для температуры реактора 24-2000 и ТОЛЬКО
@@ -211,6 +250,10 @@ class OptimizationAgent:
             )
 
         predicted_risk = self.reliability_agent.assess(modified_state)
+        _draft = ControlCandidate(
+            candidate_id=candidate_id, actions=actions, predicted_quality=[],
+            predicted_risk=predicted_risk, feasible=True,
+        )
 
         # Кандидат -- решение нарушения, только если по прогнозу он СДВИГАЕТ
         # нарушенный показатель к норме. "Прогноз есть, но равен исходному"
@@ -281,17 +324,99 @@ class OptimizationAgent:
                     "ключевой принцип запрещает такой компромисс (ARCHITECTURE.md §0)"
                 )
 
+        economics = None
+        if self.economics_agent is not None and self.economics_agent.available:
+            try:
+                economics = self.economics_agent.candidate_effect(state, modified_state, _draft)
+            except (KeyError, ValueError, ZeroDivisionError) as exc:
+                # Экономика -- вспомогательный слой: её отказ не должен
+                # ронять цикл принятия решения.
+                caveats.append(f"Экономический эффект не посчитан: {exc}")
+
+        if throughput_proxy is None:
+            per_action = [_flow_throughput_proxy(a) for a in actions]
+            measurable = [x for x in per_action if x is not None]
+            # None означает "нечем измерить", 0.0 -- "измерили, эффекта нет".
+            throughput_proxy = float(sum(measurable)) if measurable else None
+
         return ControlCandidate(
             candidate_id=candidate_id,
-            actions=[action],
+            actions=actions,
             predicted_quality=predicted_quality,
             predicted_risk=predicted_risk,
-            throughput_proxy=_flow_throughput_proxy(action),
-            energy_cost_proxy=abs(action.recommended_value - action.current_value),
+            throughput_proxy=throughput_proxy,
+            energy_cost_proxy=max(abs(a.recommended_value - a.current_value) for a in actions),
             feasible=feasible,
             rejection_reason=rejection_reason,
             caveats=caveats,
+            economics=economics,
         )
+
+    def _blending_candidates(
+        self,
+        state: ProcessState,
+        baseline_risk: EquipmentRiskAssessment,
+        quality_baseline: QualityAssessment,
+        violated_metrics: set[str],
+        start_id: int,
+    ) -> list[ControlCandidate]:
+        """Кандидаты рычага блендинга: перераспределение долей компонентов
+        дизельного пула АВТ при НЕИЗМЕННОМ суммарном расходе.
+
+        Это единственный рычаг системы, который сдвигает T95 продукта:
+        ВАК-формула T95 зависит от F9/F2/T6, а доли пула действуют через
+        фракционный состав сырья, и цепочка "доли -> T95 сырья -> T95
+        продукта" измерена на истории (ARCHITECTURE.md §6.6). Ровно
+        поэтому раньше при риске по T95 система была вынуждена
+        отказываться "нет рычага".
+        """
+        if self.blending_agent is None:
+            return []
+        assessment = self.blending_agent.assess(state)
+        if not assessment.available:
+            return []
+
+        by_key = {c.key: c for c in assessment.components}
+        out: list[ControlCandidate] = []
+        cid = start_id
+        for option in self.blending_agent.share_candidates(state):
+            effect = option.get("product_effect") or {}
+            if not effect:
+                continue
+            cid += 1
+            actions = []
+            for key, new_flow in option["flows"].items():
+                comp = by_key.get(key)
+                if comp is None:
+                    continue
+                actions.append(ControlAction(
+                    variable_name=f"blend_share_{key}",
+                    tag=comp.flow_tag,
+                    current_value=comp.flow_t_h,
+                    recommended_value=round(float(new_flow), 3),
+                    unit="т/ч",
+                ))
+            if len(actions) != len(option["flows"]):
+                continue
+            # Ведущим делаем тяжёлый компонент -- именно его доля
+            # фигурирует в объяснении и в модели чувствительности.
+            actions.sort(key=lambda a: a.variable_name != "blend_share_avt_fr_290_350")
+            caveat = (
+                f"Рычаг блендинга: доля тяжёлого компонента (фр. 290-350) "
+                f"{option['current_heavy_share_pct']:.2f}% -> {option['heavy_share_pct']:.2f}% масс., "
+                f"суммарный расход пула не меняется, сумма долей = {option['share_sum_pct']:.0f}%. "
+                "Эффект на качество -- по модели смешения, проверенной на истории "
+                "(config/blend_model.yaml), уверенность средняя."
+            )
+            out.append(self._evaluate(
+                f"b{cid}", state, actions, baseline_risk, quality_baseline, violated_metrics,
+                external_quality_deltas=effect,
+                external_caveats=[caveat],
+                # Суммарный расход пула неизменен по построению -- это
+                # измеренный ноль, а не "нечем измерить".
+                throughput_proxy=0.0,
+            ))
+        return out
 
     def _score(
         self,
@@ -337,10 +462,18 @@ class OptimizationAgent:
         score = (
             w["quality_margin_improvement"] * margin_improve
             - w["equipment_risk_severity"] * candidate.predicted_risk.severity_index
-            - w["energy_cost_proxy"] * energy_norm
-            + w["throughput_proxy"] * throughput_norm
             - unaddressed_penalty
         )
+
+        # Экономика в реальных деньгах вытесняет безразмерные прокси --
+        # но ТОЛЬКО там, где её удалось посчитать. Где не удалось,
+        # остаётся прежнее, уже проверенное поведение (§6.7).
+        net_rub = (candidate.economics or {}).get("net_rub_per_day")
+        if net_rub is not None and "economic_value" in w:
+            reference = float(w.get("economic_reference_rub_per_day", 1e6)) or 1e6
+            score += w["economic_value"] * (float(net_rub) / reference)
+        else:
+            score += -w["energy_cost_proxy"] * energy_norm + w["throughput_proxy"] * throughput_norm
         return score
 
     # -- главный вход ------------------------------------------------
@@ -374,6 +507,12 @@ class OptimizationAgent:
                     f"c{cid}", state, action, baseline_risk, quality_baseline, violated_metrics
                 )
                 candidates.append(candidate)
+
+        candidates.extend(
+            self._blending_candidates(
+                state, baseline_risk, quality_baseline, violated_metrics, start_id=cid
+            )
+        )
 
         # Если НИ ОДИН кандидат в принципе не прогнозирует эффект ни на
         # один из реально нарушенных показателей -- у системы просто нет

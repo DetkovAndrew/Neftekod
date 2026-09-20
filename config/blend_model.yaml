@@ -1,0 +1,218 @@
+_meta:
+  methodology: Blend model for the AVT diesel pool. Mixing rules are physics/literature
+    (volumetric for density, mass for sulfur, volumetric distillation-curve blending,
+    power blending index for low-temperature properties). Only a single bias constant
+    per property is fitted, estimated on PAST blocks only (forward chaining, 4 blocks).
+    Component identity established from data, and independently confirmed by the plant's
+    own VAK formula AVT6:240-350:D15, which contains F30/(F32+F30).
+  blend_target: Установка 'АВТ'. Точка отбора '3'. Продукт 'Дизельное топливо'
+  cross_check_point: Установка 'Гидроочистка'. Точка отбора '1'. Продукт 'ФРАКЦ_ДИЗ'.
+  lims_tolerance: 0 days 06:00:00
+  flow_window: 0 days 02:00:00
+  cloud_point_index_exponent: 0.05
+components:
+  avt_fr_240_290:
+    description: Боковой погон АВТ, фракция 240-290 °C (лёгкий компонент пула)
+    flow_tag: avt:F32
+    flow_unit: т/ч
+    lims_point: Установка 'АВТ'. Точка отбора '2'. Продукт 'Дизельное топливо'
+    density_kg_m3: 832.7
+    density_source: медиана ЛИМС D15 точки отбора '2'
+  avt_fr_290_350:
+    description: Боковой погон АВТ, фракция 290-350 °C (тяжёлый компонент пула)
+    flow_tag: avt:F30
+    flow_unit: т/ч
+    lims_point: Установка 'АВТ'. Точка отбора '2.1'. Продукт 'Дизельное топливо'
+    density_kg_m3: 856.8
+    density_source: медиана ЛИМС D15 точки отбора '2.1'
+observed_shares:
+  note: Массовая доля тяжёлого компонента F30/(F30+F32) за всю историю
+  n: 1455
+  p05: 0.5604
+  p50: 0.6182
+  p95: 0.6792
+component_sulfur:
+  n: 132
+  status: ok
+  share_range:
+  - 0.159
+  - 0.714
+  avt_fr_240_290_pct_mass: 0.4318
+  avt_fr_240_290_ci95:
+  - 0.2241
+  - 0.6396
+  avt_fr_290_350_pct_mass: 1.2466
+  avt_fr_290_350_ci95:
+  - 1.1105
+  - 1.3826
+  ratio_heavy_to_light: 2.89
+  mae: 0.0754
+  mae_baseline_constant: 0.0701
+typical_component_curves:
+  avt_fr_240_290:
+    IBP.T: 202.0
+    IBP.T__n: 212
+    50%.T: 251.5
+    50%.T__n: 212
+    90%.T: 283.0
+    90%.T__n: 202
+    95%.T: 296.0
+    95%.T__n: 187
+    EBP.T: 310.0
+    EBP.T__n: 207
+    CloudPoint: -23.0
+    CloudPoint__n: 20
+    D15: 832.7
+    D15__n: 120
+  avt_fr_290_350:
+    IBP.T: 195.0
+    IBP.T__n: 190
+    50%.T: 305.0
+    50%.T__n: 191
+    90%.T: 349.0
+    90%.T__n: 183
+    95%.T: 363.0
+    95%.T__n: 166
+    EBP.T: 370.0
+    EBP.T__n: 202
+    CloudPoint: 3.0
+    CloudPoint__n: 18
+    D15: 856.8
+    D15__n: 123
+validation:
+  density_kg_m3:
+    n: 213
+    n_out_of_sample: 159
+    bias: 0.0646
+    bias_stability: 0.0916
+    mae_out_of_sample: 2.1324
+    mae_baseline_constant: 2.0
+    improvement_vs_constant_pct: -6.6
+    residual_std: 3.2191
+    accepted: false
+    status: ok
+  t50_c:
+    n: 148
+    n_out_of_sample: 111
+    bias: 10.1327
+    bias_stability: 0.8321
+    mae_out_of_sample: 2.5193
+    mae_baseline_constant: 2.5315
+    improvement_vs_constant_pct: 0.5
+    residual_std: 4.9989
+    accepted: true
+    status: ok
+  t90_c:
+    n: 148
+    n_out_of_sample: 111
+    bias: -4.8906
+    bias_stability: 0.2212
+    mae_out_of_sample: 2.8663
+    mae_baseline_constant: 4.2703
+    improvement_vs_constant_pct: 32.9
+    residual_std: 5.1046
+    accepted: true
+    status: ok
+  t95_c:
+    n: 149
+    n_out_of_sample: 111
+    bias: -1.4403
+    bias_stability: 0.0978
+    mae_out_of_sample: 3.5201
+    mae_baseline_constant: 4.8423
+    improvement_vs_constant_pct: 27.3
+    residual_std: 5.1224
+    accepted: true
+    status: ok
+  cloud_point_c:
+    n: 20
+    status: insufficient_data
+share_sensitivity:
+  density_kg_m3:
+    n: 213
+    status: ok
+    unit: единиц показателя на единицу доли (0..1)
+    model_slope: 24.258
+    empirical_slope: -6.15
+    empirical_ci95:
+    - -14.586
+    - 2.285
+    signs_agree: false
+    model_slope_within_empirical_ci95: false
+    empirical_slope_significant: false
+  t50_c:
+    n: 148
+    status: ok
+    unit: единиц показателя на единицу доли (0..1)
+    model_slope: 51.352
+    empirical_slope: 25.064
+    empirical_ci95:
+    - 7.286
+    - 42.841
+    signs_agree: true
+    model_slope_within_empirical_ci95: false
+    empirical_slope_significant: true
+  t90_c:
+    n: 148
+    status: ok
+    unit: единиц показателя на единицу доли (0..1)
+    model_slope: 31.397
+    empirical_slope: 30.848
+    empirical_ci95:
+    - 5.429
+    - 56.268
+    signs_agree: true
+    model_slope_within_empirical_ci95: true
+    empirical_slope_significant: true
+  t95_c:
+    n: 149
+    status: ok
+    unit: единиц показателя на единицу доли (0..1)
+    model_slope: 37.607
+    empirical_slope: 25.876
+    empirical_ci95:
+    - -3.875
+    - 55.628
+    signs_agree: true
+    model_slope_within_empirical_ci95: true
+    empirical_slope_significant: false
+  cloud_point_c:
+    n: 20
+    status: insufficient_data
+feed_to_product_propagation:
+  t95_c:
+    n: 1223
+    status: ok
+    intercept: 55.3137
+    slope: 0.8285
+    slope_ci95:
+    - 0.7962
+    - 0.8607
+    pearson_r: 0.8218
+    mae: 3.2468
+    mae_baseline_constant: 6.3156
+  t50_c:
+    n: 1188
+    status: ok
+    intercept: 78.414
+    slope: 0.7012
+    slope_ci95:
+    - 0.6705
+    - 0.732
+    pearson_r: 0.7925
+    mae: 1.9838
+    mae_baseline_constant: 3.7062
+  density_kg_m3:
+    n: 42
+    status: insufficient_data
+cross_check_avt3_vs_ht_feed:
+  50%.T:
+    n: 1201
+    median_abs_diff: 2.0
+  95%.T:
+    n: 1191
+    median_abs_diff: 3.0
+  CloudPoint:
+    n: 1194
+    median_abs_diff: 0.0
+matched_samples: 1455

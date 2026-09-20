@@ -87,3 +87,30 @@ def load_reliability_bounds() -> dict:
         )
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_blend_model() -> dict:
+    """Модель блендинга дизельного пула (ARCHITECTURE.md §6.6).
+
+    Отсутствие файла не является ошибкой: блендинг -- отдельный контур,
+    и система обязана работать и без него (возвращается пустой словарь,
+    Агент блендинга при этом честно сообщает о недоступности, а не
+    подставляет выдуманные доли). Пересчёт --
+    `scripts/compute_blend_model.py` (нужен NEFTEKOD_DATA_DIR).
+    """
+    path = CONFIG_DIR / "blend_model.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_economics() -> dict:
+    """Цены и физические константы для экономических критериев
+    (ARCHITECTURE.md §6.7). Отсутствие файла не ошибка: без него система
+    работает, просто не показывает рубли."""
+    path = CONFIG_DIR / "economics.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
