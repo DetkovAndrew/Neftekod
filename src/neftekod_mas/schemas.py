@@ -245,6 +245,11 @@ class OptimizationResult(BaseModel):
     recommended_candidate_id: Optional[str] = None
     no_feasible_solution: bool = False
     no_feasible_reason: Optional[str] = None
+    # Отклонённые варианты с причиной отбраковки. Нужны, чтобы объяснить
+    # оператору (и LLM-оркестратору, §9.1) не только что предложено, но и
+    # ПОЧЕМУ остальное не подошло -- это прямое требование ТЗ п.5
+    # ("чем выбранный вариант лучше допустимых альтернатив").
+    rejected_candidates: list[ControlCandidate] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +305,11 @@ class Recommendation(BaseModel):
     is_refusal: bool = False
     alternatives: list[ControlCandidate] = Field(default_factory=list)  # Парето-фронт минус выбранный (ТЗ п.3: "альтернативы")
     llm_status: Optional[str] = None  # ok | rejected: <причина> | unavailable: <причина> | None (Monitor выключен)
+    # Кто вёл цикл: "deterministic" -- обычный Оркестратор; "llm" -- цикл
+    # провела локальная модель через tool-calling (ARCHITECTURE.md §9.1).
+    # Даже при "llm" все числа, проверки и Guard остаются
+    # детерминированными: модель только выбирает из проверенных вариантов.
+    orchestration_mode: str = "deterministic"
     trace: list[AgentMessage] = Field(default_factory=list)
 
 

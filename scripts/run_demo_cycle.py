@@ -37,6 +37,7 @@ from neftekod_mas.optimization.optimization_agent import OptimizationAgent  # no
 from neftekod_mas.optimization.joint_envelope import JointEnvelopeChecker  # noqa: E402
 from neftekod_mas.orchestrator.guard import Guard  # noqa: E402
 from neftekod_mas.orchestrator.llm_monitor import LLMMonitor, OpenAICompatClient  # noqa: E402
+from neftekod_mas.orchestrator.llm_orchestrator import LLMOrchestrator, OpenAIToolClient  # noqa: E402
 from neftekod_mas.orchestrator.orchestrator import Orchestrator  # noqa: E402
 from neftekod_mas.quality.quality_agent import QualityAgent  # noqa: E402
 from neftekod_mas.quality.soft_sensors import SoftSensorService  # noqa: E402
@@ -181,8 +182,17 @@ def print_recommendation_card(rec) -> None:
     print(f"Объяснение: {rec.explanation}")
     if rec.llm_status is not None:
         print("-" * 78)
-        print(f"Комментарий LLM Monitor ({rec.llm_status}):")
-        print(f"    {rec.llm_commentary}" if rec.llm_commentary else "    (не показан)")
+        # Две принципиально разные роли LLM не должны выглядеть одинаково
+        # в карточке: Monitor только пересказывает готовое решение (§9),
+        # а Оркестратор вёл цикл и выбрал вариант из проверенных (§9.1).
+        if rec.orchestration_mode == "llm":
+            print(f"Цикл провёл LLM-оркестратор ({rec.llm_status}); "
+                  "все расчёты и Guard -- детерминированные")
+            print(f"    Обоснование выбора моделью: {rec.llm_commentary}"
+                  if rec.llm_commentary else "    (модель не дала пояснения)")
+        else:
+            print(f"Комментарий LLM Monitor ({rec.llm_status}):")
+            print(f"    {rec.llm_commentary}" if rec.llm_commentary else "    (не показан)")
     if rec.alternatives:
         print("-" * 78)
         print(f"Альтернативы (Парето-фронт, {len(rec.alternatives)}):")
@@ -211,6 +221,12 @@ def main() -> None:
     parser.add_argument("--llm-url", default=None, help="OpenAI-совместимый endpoint, напр. http://localhost:11434/v1")
     parser.add_argument("--llm-model", default="qwen2.5:7b")
     parser.add_argument("--trace", action="store_true", help="напечатать трассу сообщений агентов")
+    parser.add_argument(
+        "--llm-orchestrator", action="store_true",
+        help="цикл ведёт локальная LLM через tool-calling (ARCHITECTURE.md §9.1); "
+             "Guard и все расчёты остаются детерминированными, при любой проблеме "
+             "отрабатывает обычный оркестратор",
+    )
     args = parser.parse_args()
 
     decision_at = datetime.fromisoformat(args.timestamp)
@@ -228,6 +244,10 @@ def main() -> None:
     )
 
     orchestrator = build_orchestrator(soft_sensors=soft_sensors, llm_monitor=monitor)
+    if args.llm_orchestrator:
+        if not args.llm_url:
+            parser.error("--llm-orchestrator требует --llm-url")
+        orchestrator = LLMOrchestrator(orchestrator, OpenAIToolClient(args.llm_url, args.llm_model))
     rec = orchestrator.run_cycle(decision_at, avt, ht, lims, pak)
     print_recommendation_card(rec)
     if args.trace:

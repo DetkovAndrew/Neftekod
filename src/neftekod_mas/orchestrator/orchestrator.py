@@ -101,6 +101,7 @@ class Orchestrator:
             stale_lims_minutes=self.stale_lims_minutes,
             stale_pak_minutes=self.stale_pak_minutes,
         )
+        self.last_cycle_context = None  # каждый цикл начинается с чистого контекста
         self.run_logger.log(decision_at, "01_process_state", state)
         flags = state.quality_report.flags
         bus.send(
@@ -203,37 +204,31 @@ class Orchestrator:
         # при BLOCK пробуем следующего по рангу кандидата (defense in depth).
         # Альтернативы (ТЗ п.3, роль Оркестратора: "...альтернативы...") --
         # остальные точки Парето-фронта, кроме выбранной.
-        pareto_ids = set(opt_result.pareto_front_ids)
-        by_id = {c.candidate_id: c for c in opt_result.feasible_candidates}
+        # Контекст цикла сохраняется целиком -- по нему LLM-оркестратор
+        # (§9.1) работает через инструменты, не пересчитывая ничего сам.
+        # Детерминированный результат при этом уже получен и остаётся
+        # источником истины.
+        self.last_cycle_context = {
+            "decision_at": decision_at,
+            "state": state,
+            "quality": quality,
+            "risk": risk,
+            "optimization": opt_result,
+            "all_candidates": list(getattr(opt_result, "feasible_candidates", [])) + self._rejected_candidates(opt_result),
+            "violated_metrics": violated_metrics,
+            "key_state": key_state,
+            "blending": self._blend_assessment(state),
+        }
 
         for candidate in opt_result.feasible_candidates:
             bus.send("orchestrator", "guard", "ControlCandidate", f"проверить {candidate.candidate_id}")
-            guard_report = self.guard.review(candidate, decision_at, state)
-            bus.send("guard", "orchestrator", "GuardReport", f"{candidate.candidate_id}: {guard_report.final_verdict.value}")
-            if guard_report.final_verdict != GuardVerdict.BLOCK:
-                alternatives = [
-                    by_id[cid] for cid in pareto_ids
-                    if cid != candidate.candidate_id and cid in by_id
-                ]
-                bus.send("orchestrator", "operator", "Recommendation", f"рекомендован {candidate.candidate_id}, альтернатив {len(alternatives)}")
-                return Recommendation(
-                    decision_at=decision_at,
-                    key_state=key_state,
-                    problem_or_risk=self._problem_text(quality, risk),
-                    proposed_actions=candidate.actions,
-                    expected_effect={
-                        **{e.metric: e.value for e in candidate.predicted_quality},
-                        "equipment_risk_severity": candidate.predicted_risk.severity_index,
-                        "energy_cost_proxy": candidate.energy_cost_proxy or 0.0,
-                    },
-                    constraints_checked=guard_report.checks,
-                    confidence=quality.overall_confidence,
-                    confidence_warnings=self._warnings(state) + candidate.caveats,
-                    explanation=explain_recommendation(candidate, quality, risk, opt_result.feasible_candidates),
-                    economic_effect=candidate.economics,
-                    is_refusal=False,
-                    alternatives=alternatives,
-                )
+            built = self.recommendation_for(self.last_cycle_context, candidate)
+            recommendation, verdict = built
+            bus.send("guard", "orchestrator", "GuardReport", f"{candidate.candidate_id}: {verdict.value}")
+            if verdict != GuardVerdict.BLOCK:
+                bus.send("orchestrator", "operator", "Recommendation",
+                         f"рекомендован {candidate.candidate_id}, альтернатив {len(recommendation.alternatives)}")
+                return recommendation
 
         return self._refusal(
             bus, decision_at, flags,
@@ -241,6 +236,62 @@ class Orchestrator:
             "P&ID-проверку Guard (см. ARCHITECTURE.md §6.5).",
             key_state=key_state,
         )
+
+    def recommendation_for(self, context: dict, candidate):
+        """Собирает карточку для КОНКРЕТНОГО кандидата, прогнав его через
+        независимый Guard. Возвращает (карточка, вердикт Guard).
+
+        Единственный путь превращения кандидата в рекомендацию -- и
+        детерминированный цикл, и LLM-оркестратор идут именно через него.
+        Поэтому выбор модели не может обойти Guard: другого способа
+        получить карточку в системе просто нет.
+        """
+        decision_at = context["decision_at"]
+        state, quality, risk = context["state"], context["quality"], context["risk"]
+        opt_result = context["optimization"]
+        guard_report = self.guard.review(candidate, decision_at, state)
+
+        by_id = {c.candidate_id: c for c in opt_result.feasible_candidates}
+        alternatives = [
+            by_id[cid] for cid in opt_result.pareto_front_ids
+            if cid != candidate.candidate_id and cid in by_id
+        ]
+        recommendation = Recommendation(
+            decision_at=decision_at,
+            key_state=context["key_state"],
+            problem_or_risk=self._problem_text(quality, risk),
+            proposed_actions=candidate.actions,
+            expected_effect={
+                **{e.metric: e.value for e in candidate.predicted_quality},
+                "equipment_risk_severity": candidate.predicted_risk.severity_index,
+                "energy_cost_proxy": candidate.energy_cost_proxy or 0.0,
+            },
+            constraints_checked=guard_report.checks,
+            confidence=quality.overall_confidence,
+            confidence_warnings=self._warnings(state) + candidate.caveats,
+            explanation=explain_recommendation(candidate, quality, risk, opt_result.feasible_candidates),
+            economic_effect=candidate.economics,
+            is_refusal=False,
+            alternatives=alternatives,
+        )
+        return recommendation, guard_report.final_verdict
+
+    @staticmethod
+    def _rejected_candidates(opt_result) -> list:
+        """Отклонённые варианты для инструмента explain_rejections.
+        Агент оптимизации не хранит их в OptimizationResult (контракт
+        отдаёт только допустимые), поэтому берём из необязательного поля,
+        если оно есть -- иначе список пуст и инструмент честно это скажет."""
+        return list(getattr(opt_result, "rejected_candidates", []) or [])
+
+    def _blend_assessment(self, state):
+        agent = getattr(self.optimization_agent, "blending_agent", None)
+        if agent is None:
+            return None
+        try:
+            return agent.assess(state)
+        except (KeyError, ValueError, ZeroDivisionError):
+            return None
 
     def _problem_text(self, quality, risk) -> str:
         bits = []

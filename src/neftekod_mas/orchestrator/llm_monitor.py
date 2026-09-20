@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -106,10 +107,31 @@ class OpenAICompatClient:
             self.base_url.rstrip("/") + "/chat/completions",
             data=body, headers={"Content-Type": "application/json"}, method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310 -- URL задаёт оператор
+        opener = _local_opener(self.base_url)
+        with opener.open(req, timeout=self.timeout_s) as resp:  # noqa: S310 -- URL задаёт оператор
             payload = json.loads(resp.read().decode("utf-8"))
         return payload["choices"][0]["message"]["content"].strip()
 
+
+
+def _local_opener(base_url: str):
+    """Открыватель HTTP, который НЕ ходит через системный прокси, если
+    сервер модели локальный.
+
+    Практическая причина: в среде с заданным `http_proxy` (корпоративный
+    периметр, WSL, докер-хост) urllib отправляет даже запрос к
+    127.0.0.1 в прокси, и локальная модель отвечает "502 Bad Gateway".
+    Маска вида `127.*` в `no_proxy` при этом не помогает: Python
+    сопоставляет записи `no_proxy` как суффиксы имени хоста, а не как
+    шаблоны. Для локального адреса прокси не нужен по определению,
+    поэтому он отключается явно -- это также ровно тот случай, который
+    описан в ТЗ: продакшен работает в закрытом контуре без интернета.
+    """
+    host = urllib.parse.urlsplit(base_url).hostname or ""
+    is_local = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    if is_local:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener()
 
 def card_facts(rec: Recommendation, tag_descriptions: dict[str, str] | None = None) -> str:
     """Факты карточки в компактном текстовом виде -- ровно то, что видит

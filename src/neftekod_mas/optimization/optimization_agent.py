@@ -530,6 +530,7 @@ class OptimizationAgent:
                 decision_at=state.decision_at,
                 candidates_evaluated=len(candidates),
                 feasible_candidates=[],
+                rejected_candidates=[c for c in candidates if not c.feasible],
                 no_feasible_solution=True,
                 no_feasible_reason=(
                     f"Ни один из {len(candidates)} вариантов по кандидатным рычагам не увеличивает "
@@ -550,6 +551,7 @@ class OptimizationAgent:
                 decision_at=state.decision_at,
                 candidates_evaluated=len(candidates),
                 feasible_candidates=[],
+                rejected_candidates=[c for c in candidates if not c.feasible],
                 no_feasible_solution=True,
                 no_feasible_reason=(
                     "Ни один из "
@@ -565,6 +567,7 @@ class OptimizationAgent:
             decision_at=state.decision_at,
             candidates_evaluated=len(candidates),
             feasible_candidates=feasible,
+            rejected_candidates=[c for c in candidates if not c.feasible],
             pareto_front_ids=pareto_ids,
             recommended_candidate_id=feasible[0].candidate_id,
         )
